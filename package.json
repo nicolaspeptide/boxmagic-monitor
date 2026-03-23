@@ -1,13 +1,11 @@
 {
   "name": "boxmagic-monitor",
   "version": "1.0.0",
-  "description": "Monitor de cupos BoxMagic",
-  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "puppeteer": "^21.0.0",
+    "playwright-core": "^1.40.0",
     "nodemailer": "^6.9.0"
   }
 }
