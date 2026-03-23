@@ -9,7 +9,7 @@ const CONFIG = {
 
 async function checkCupos() {
   const browser = await chromium.launch({
-    executablePath: '/usr/bin/chromium-browser',
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '/ms-playwright/chromium-1091/chrome-linux/chrome',
     headless: true,
     args: ['--no-sandbox','--disable-setuid-sandbox','--disable-gpu']
   });
