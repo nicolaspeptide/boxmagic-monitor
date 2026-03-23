@@ -1,9 +1,10 @@
 const { chromium } = require('playwright-core');
 const nodemailer = require('nodemailer');
+const twilio = require('twilio');
 
 const CONFIG = {
   email: 'ncerdagaldames@gmail.com',
-  boxmagicUrl: 'https://members.boxmagic.app/a/g/oGDPQaGLb5/horarios',
+  boxmagicUrl: 'https://members.boxmagic.app/g/oGDPQaGLb5/horarios',
   horarioID: 'j80pXQEP0W',
 };
 
@@ -53,6 +54,7 @@ async function checkCupos() {
 }
 
 async function sendNotification(cupos) {
+  // Gmail
   const transporter = nodemailer.createTransporter({
     service: 'gmail',
     auth: {
@@ -64,12 +66,21 @@ async function sendNotification(cupos) {
   await transporter.sendMail({
     from: process.env.GMAIL_USER,
     to: CONFIG.email,
-    subject: '🏋️ ¡Cupo disponible en BoxMagic!',
+    subject: '🥊 ¡Cupo disponible en BoxMagic!',
     html: `<h2>¡Hay ${cupos} cupo(s) disponible(s)!</h2>
            <p>Clase 19:00-20:00hrs tiene espacio ahora.</p>
            <a href="${CONFIG.boxmagicUrl}">Reservar ahora →</a>`
   });
   console.log('Email enviado!');
+
+  // WhatsApp
+  const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+  await client.messages.create({
+    from: 'whatsapp:+14155238886',
+    to: process.env.TWILIO_WHATSAPP_TO,
+    body: `🥊 ¡Hay ${cupos} cupo(s) disponible(s) en BoxMagic!\nClase 19:00-20:00hrs\nReserva ahora: ${CONFIG.boxmagicUrl}`
+  });
+  console.log('WhatsApp enviado!');
 }
 
 checkCupos().catch(console.error);
