@@ -1,56 +1,51 @@
-const puppeteer = require('puppeteer');
+const { chromium } = require('playwright-core');
 const nodemailer = require('nodemailer');
 
 const CONFIG = {
   email: 'ncerdagaldames@gmail.com',
   boxmagicUrl: 'https://members.boxmagic.app/a/g/oGDPQaGLb5/horarios',
-  gimnasioID: 'oGDPQaGLb5',
-  claseID: 'wa0e5oo0v6',
   horarioID: 'j80pXQEP0W',
-  fechaYMD: new Date().toISOString().split('T')[0]
 };
 
 async function checkCupos() {
-  const browser = await puppeteer.launch({
+  const browser = await chromium.launch({
+    executablePath: '/usr/bin/chromium-browser',
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-gpu']
   });
-  
+
   try {
     const page = await browser.newPage();
-    let token = null;
-    let cuposData = null;
+    let espaciosDisponibles = null;
 
     page.on('response', async (response) => {
-      const url = response.url();
-      if (url.includes('tokenBM')) {
-        const data = await response.json();
-        if (data.token) token = data.token;
-      }
-      if (url.includes('porIDs')) {
-        const data = await response.json();
-        cuposData = data;
-      }
-    });
-
-    await page.goto(CONFIG.boxmagicUrl, { 
-      waitUntil: 'networkidle2',
-      timeout: 30000 
-    });
-
-    await new Promise(r => setTimeout(r, 5000));
-
-    if (cuposData) {
-      const instancias = cuposData.instancias;
-      for (const key in instancias) {
-        const inst = instancias[key];
-        if (inst.horarioID === CONFIG.horarioID) {
-          console.log(`espaciosDisponibles: ${inst.espaciosDisponibles}`);
-          if (inst.espaciosDisponibles > 0) {
-            await sendNotification(inst.espaciosDisponibles);
+      if (response.url().includes('porIDs')) {
+        try {
+          const data = await response.json();
+          if (data.instancias) {
+            for (const key in data.instancias) {
+              const inst = data.instancias[key];
+              if (inst.horarioID === CONFIG.horarioID) {
+                espaciosDisponibles = inst.espaciosDisponibles;
+                console.log(`Cupos disponibles: ${espaciosDisponibles}`);
+              }
+            }
           }
-        }
+        } catch(e) {}
       }
+    });
+
+    await page.goto(CONFIG.boxmagicUrl, {
+      waitUntil: 'networkidle',
+      timeout: 60000
+    });
+
+    await page.waitForTimeout(5000);
+
+    if (espaciosDisponibles > 0) {
+      await sendNotification(espaciosDisponibles);
+    } else {
+      console.log('Sin cupos disponibles');
     }
   } finally {
     await browser.close();
@@ -74,8 +69,7 @@ async function sendNotification(cupos) {
            <p>Clase 19:00-20:00hrs tiene espacio ahora.</p>
            <a href="${CONFIG.boxmagicUrl}">Reservar ahora →</a>`
   });
-  
-  console.log('Notificación enviada!');
+  console.log('Email enviado!');
 }
 
 checkCupos().catch(console.error);
