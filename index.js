@@ -15,21 +15,19 @@ const CONFIG = {
 };
 
 const DIAS_NOMBRE = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+const INTERVALO_MINUTOS = 15;
 
 function getDiasRestantes() {
-  // Día actual en Chile (GMT-3)
   const ahora = new Date();
-  const chileOffset = -3 * 60;
   const utc = ahora.getTime() + ahora.getTimezoneOffset() * 60000;
-  const horaChile = new Date(utc + chileOffset * 60000);
+  const horaChile = new Date(utc + (-3 * 60) * 60000);
   const diaHoy = horaChile.getDay();
 
-  // Filtrar días que quedan esta semana (desde hoy inclusive)
   const diasMonitorear = Object.keys(CONFIG.horarios)
     .map(Number)
     .filter(dia => dia >= diaHoy);
 
-  return { diaHoy, diasMonitorear, horaChile };
+  return { diaHoy, diasMonitorear };
 }
 
 async function checkCupos() {
@@ -40,7 +38,7 @@ async function checkCupos() {
     return;
   }
 
-  console.log(`Hoy es ${DIAS_NOMBRE[diaHoy]} → Monitoreando días: ${diasMonitorear.map(d => DIAS_NOMBRE[d]).join(', ')}`);
+  console.log(`Hoy es ${DIAS_NOMBRE[diaHoy]} → Monitoreando: ${diasMonitorear.map(d => DIAS_NOMBRE[d]).join(', ')}`);
 
   const browser = await chromium.launch({
     executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '/ms-playwright/chromium-1091/chrome-linux/chrome',
@@ -60,21 +58,17 @@ async function checkCupos() {
             for (const key in data.instancias) {
               const inst = data.instancias[key];
 
-              // Obtener día y hora en Chile
               const fechaInicio = new Date(inst.fechaInicio);
               const utc = fechaInicio.getTime() + fechaInicio.getTimezoneOffset() * 60000;
               const fechaChile = new Date(utc + (-3 * 60) * 60000);
               const diaClase = fechaChile.getDay();
               const horaClase = fechaChile.getHours();
 
-              // ¿Es un día que monitoreamos?
               if (!diasMonitorear.includes(diaClase)) continue;
 
-              // ¿Es una hora que nos interesa ese día?
               const horasDia = CONFIG.horarios[diaClase] || [];
               if (!horasDia.includes(horaClase)) continue;
 
-              // ¿Ya tengo reserva en esta instancia?
               const yaReservado = data.participantes && data.participantes[CONFIG.usuarioID];
               if (yaReservado) {
                 console.log(`⏭️  ${DIAS_NOMBRE[diaClase]} ${horaClase}:00hrs → Ya tienes reserva, se omite.`);
@@ -141,4 +135,13 @@ async function sendNotification(dia, hora, cupos) {
   console.log(`💬 WhatsApp enviado: ${dia} ${hora}:00hrs`);
 }
 
-checkCupos().catch(console.error);
+async function loop() {
+  while (true) {
+    console.log(`\n⏰ ${new Date().toLocaleString('es-CL', {timeZone: 'America/Santiago'})} — Iniciando revisión...`);
+    await checkCupos().catch(console.error);
+    console.log(`⏳ Próxima revisión en ${INTERVALO_MINUTOS} minutos.`);
+    await new Promise(r => setTimeout(r, INTERVALO_MINUTOS * 60 * 1000));
+  }
+}
+
+loop();
