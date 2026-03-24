@@ -16,20 +16,31 @@ const CONFIG = {
 
 const DIAS_NOMBRE = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
 
-function getHorasHoy() {
-  const dia = new Date().getDay();
-  return { dia, horas: CONFIG.horarios[dia] || [] };
+function getDiasRestantes() {
+  // Día actual en Chile (GMT-3)
+  const ahora = new Date();
+  const chileOffset = -3 * 60;
+  const utc = ahora.getTime() + ahora.getTimezoneOffset() * 60000;
+  const horaChile = new Date(utc + chileOffset * 60000);
+  const diaHoy = horaChile.getDay();
+
+  // Filtrar días que quedan esta semana (desde hoy inclusive)
+  const diasMonitorear = Object.keys(CONFIG.horarios)
+    .map(Number)
+    .filter(dia => dia >= diaHoy);
+
+  return { diaHoy, diasMonitorear, horaChile };
 }
 
 async function checkCupos() {
-  const { dia, horas: horasHoy } = getHorasHoy();
+  const { diaHoy, diasMonitorear } = getDiasRestantes();
 
-  if (horasHoy.length === 0) {
-    console.log(`Hoy es ${DIAS_NOMBRE[dia]} → No hay horarios que monitorear.`);
+  if (diasMonitorear.length === 0) {
+    console.log('No quedan días que monitorear esta semana.');
     return;
   }
 
-  console.log(`Hoy es ${DIAS_NOMBRE[dia]} (día ${dia}) → Monitoreando horas: ${horasHoy.join(', ')}hrs`);
+  console.log(`Hoy es ${DIAS_NOMBRE[diaHoy]} → Monitoreando días: ${diasMonitorear.map(d => DIAS_NOMBRE[d]).join(', ')}`);
 
   const browser = await chromium.launch({
     executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '/ms-playwright/chromium-1091/chrome-linux/chrome',
@@ -49,23 +60,32 @@ async function checkCupos() {
             for (const key in data.instancias) {
               const inst = data.instancias[key];
 
+              // Obtener día y hora en Chile
               const fechaInicio = new Date(inst.fechaInicio);
-              const hora = fechaInicio.getUTCHours() - 3;
-              const horaLocal = hora < 0 ? hora + 24 : hora;
+              const utc = fechaInicio.getTime() + fechaInicio.getTimezoneOffset() * 60000;
+              const fechaChile = new Date(utc + (-3 * 60) * 60000);
+              const diaClase = fechaChile.getDay();
+              const horaClase = fechaChile.getHours();
 
-              if (!horasHoy.includes(horaLocal)) continue;
+              // ¿Es un día que monitoreamos?
+              if (!diasMonitorear.includes(diaClase)) continue;
 
+              // ¿Es una hora que nos interesa ese día?
+              const horasDia = CONFIG.horarios[diaClase] || [];
+              if (!horasDia.includes(horaClase)) continue;
+
+              // ¿Ya tengo reserva en esta instancia?
               const yaReservado = data.participantes && data.participantes[CONFIG.usuarioID];
               if (yaReservado) {
-                console.log(`⏭️  ${horaLocal}:00hrs → Ya tienes reserva, se omite.`);
+                console.log(`⏭️  ${DIAS_NOMBRE[diaClase]} ${horaClase}:00hrs → Ya tienes reserva, se omite.`);
                 continue;
               }
 
               const espacios = inst.espaciosDisponibles;
-              console.log(`🔍 ${horaLocal}:00hrs → ${espacios} espacio(s) disponible(s)`);
+              console.log(`🔍 ${DIAS_NOMBRE[diaClase]} ${horaClase}:00hrs → ${espacios} espacio(s) disponible(s)`);
 
               if (espacios > 0) {
-                resultados.push({ hora: horaLocal, espacios });
+                resultados.push({ dia: DIAS_NOMBRE[diaClase], hora: horaClase, espacios });
               }
             }
           }
@@ -82,7 +102,7 @@ async function checkCupos() {
 
     if (resultados.length > 0) {
       for (const r of resultados) {
-        await sendNotification(r.hora, r.espacios);
+        await sendNotification(r.dia, r.hora, r.espacios);
       }
     } else {
       console.log('Sin cupos disponibles.');
@@ -93,7 +113,7 @@ async function checkCupos() {
   }
 }
 
-async function sendNotification(hora, cupos) {
+async function sendNotification(dia, hora, cupos) {
   const transporter = nodemailer.createTransporter({
     service: 'gmail',
     auth: {
@@ -105,20 +125,20 @@ async function sendNotification(hora, cupos) {
   await transporter.sendMail({
     from: process.env.GMAIL_USER,
     to: CONFIG.email,
-    subject: `🥊 ¡Cupo disponible ${hora}:00hrs en BoxMagic!`,
+    subject: `🥊 ¡Cupo disponible ${dia} ${hora}:00hrs en BoxMagic!`,
     html: `<h2>¡Hay ${cupos} cupo(s) disponible(s)!</h2>
-           <p>Clase ${hora}:00-${hora+1}:00hrs tiene espacio ahora.</p>
+           <p>${dia} ${hora}:00-${hora+1}:00hrs tiene espacio ahora.</p>
            <a href="${CONFIG.boxmagicUrl}">Reservar ahora →</a>`
   });
-  console.log(`📧 Email enviado para ${hora}:00hrs!`);
+  console.log(`📧 Email enviado: ${dia} ${hora}:00hrs`);
 
   const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
   await client.messages.create({
     from: 'whatsapp:+14155238886',
     to: process.env.TWILIO_WHATSAPP_TO,
-    body: `🥊 ¡Hay ${cupos} cupo(s) en BoxMagic!\nClase ${hora}:00-${hora+1}:00hrs\nReserva: ${CONFIG.boxmagicUrl}`
+    body: `🥊 ¡Cupo disponible en BoxMagic!\n${dia} ${hora}:00-${hora+1}:00hrs\n${cupos} espacio(s)\nReserva: ${CONFIG.boxmagicUrl}`
   });
-  console.log(`💬 WhatsApp enviado para ${hora}:00hrs!`);
+  console.log(`💬 WhatsApp enviado: ${dia} ${hora}:00hrs`);
 }
 
 checkCupos().catch(console.error);
