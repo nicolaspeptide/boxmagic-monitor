@@ -29,9 +29,7 @@ function getFechaChile() {
 function getFechasDelMes() {
   const hoy = getFechaChile();
   const fechas = [];
-
   const finMes = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
-
   const cursor = new Date(hoy);
   cursor.setHours(0, 0, 0, 0);
 
@@ -59,7 +57,15 @@ function getFechasDelMes() {
 async function getToken() {
   const loginRes = await fetch('https://api-bh.boxmagic.app/boxmagic/cuentas/ingresar', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Gots-Ambiente': 'produccion',
+      'Gots-App': 'members',
+      'Gots-Dispositivo': 'web',
+      'Gots-Gimnasio': CONFIG.gimnasioID,
+      'Gots-Version': '5.72.41'
+    },
     body: JSON.stringify({
       email: process.env.BOXMAGIC_EMAIL,
       pass: process.env.BOXMAGIC_PASSWORD
@@ -73,7 +79,6 @@ async function getToken() {
 async function checkCupos() {
   const hoy = getFechaChile();
   const todasLasFechas = getFechasDelMes();
-
   const fechasPendientes = todasLasFechas.filter(f => !slotsReservados.has(f.slotKey));
 
   if (fechasPendientes.length === 0) {
@@ -101,8 +106,13 @@ async function checkCupos() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Accept': 'application/json',
           'Authorization': `Bearer ${token}`,
-          'Gots-Gimnasio': CONFIG.gimnasioID
+          'Gots-Ambiente': 'produccion',
+          'Gots-App': 'members',
+          'Gots-Dispositivo': 'web',
+          'Gots-Gimnasio': CONFIG.gimnasioID,
+          'Gots-Version': '5.72.41'
         },
         body: JSON.stringify({
           instancias: [{
