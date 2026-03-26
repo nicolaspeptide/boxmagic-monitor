@@ -6,8 +6,8 @@ const CONFIG = {
   email: 'ncerdagaldames@gmail.com',
   gimnasioID: 'oGDPQaGLb5',
   usuarioID: 'ep4Q9nWV4a',
+  loginUrl: 'https://members.boxmagic.app/a/g?o=pi-e',
   boxmagicUrl: 'https://members.boxmagic.app/g/oGDPQaGLb5/horarios',
-  // claseID y horarioID por día y hora
   slots: [
     { dia: 1, diaNombre: 'Lunes',     hora: 19, claseID: 'Vd0jxy2Lrx', horarioID: 'Kp0Myj6E08' },
     { dia: 1, diaNombre: 'Lunes',     hora: 20, claseID: 'gjLKb2rDRe', horarioID: '6XD9krv342' },
@@ -37,7 +37,6 @@ function getFechasDelMes() {
   while (cursor <= finMes) {
     const diaNum = cursor.getDay();
     const fechaYMD = cursor.toISOString().split('T')[0];
-
     for (const slot of CONFIG.slots) {
       if (slot.dia === diaNum) {
         const slotKey = `${fechaYMD}-${slot.hora}`;
@@ -46,11 +45,21 @@ function getFechasDelMes() {
     }
     cursor.setDate(cursor.getDate() + 1);
   }
-
   return fechas;
 }
 
-async function checkSlot(page, { diaNombre, fechaYMD, hora, claseID, horarioID, slotKey }) {
+async function login(page) {
+  console.log('🔐 Iniciando login...');
+  await page.goto(CONFIG.loginUrl, { waitUntil: 'networkidle', timeout: 60000 });
+  await page.waitForTimeout(2000);
+  await page.fill('input[placeholder="Correo"]', process.env.BOXMAGIC_EMAIL);
+  await page.fill('input[placeholder="Contraseña"]', process.env.BOXMAGIC_PASSWORD);
+  await page.click('button:has-text("Ingresar")');
+  await page.waitForTimeout(4000);
+  console.log('✅ Login exitoso');
+}
+
+async function checkSlot(page, { diaNombre, fechaYMD, hora, claseID, horarioID }) {
   return new Promise(async (resolve) => {
     let resultado = null;
 
@@ -85,11 +94,9 @@ async function checkSlot(page, { diaNombre, fechaYMD, hora, claseID, horarioID, 
     };
 
     page.on('response', handler);
-
     const url = `${CONFIG.boxmagicUrl}?instanciaID=i${fechaYMD}>${claseID}>${horarioID}`;
     await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(3000);
-
     page.off('response', handler);
     resolve(resultado);
   });
@@ -105,7 +112,6 @@ async function checkCupos() {
     return;
   }
 
-  const dias = [...new Set(fechasPendientes.map(f => `${f.diaNombre} ${f.fechaYMD}`))];
   console.log(`Hoy es ${hoy.toLocaleDateString('es-CL', {weekday:'long', day:'numeric', month:'long'})}`);
   console.log(`📅 Monitoreando ${fechasPendientes.length} slot(s) pendientes este mes`);
 
@@ -117,6 +123,10 @@ async function checkCupos() {
 
   try {
     const page = await browser.newPage();
+
+    // Login primero
+    await login(page);
+
     const resultados = [];
 
     for (const slot of fechasPendientes) {
