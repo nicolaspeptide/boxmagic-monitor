@@ -52,9 +52,9 @@ async function login(page) {
   console.log('🔐 Iniciando login...');
   await page.goto(CONFIG.loginUrl, { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2000);
-  await page.fill('input[placeholder="Correo"]', process.env.BOXMAGIC_EMAIL);
-  await page.fill('input[placeholder="Contraseña"]', process.env.BOXMAGIC_PASSWORD);
-  await page.click('button:has-text("Ingresar")');
+  await page.fill('input[type="email"], input[name="email"], input:first-of-type', process.env.BOXMAGIC_EMAIL);
+  await page.fill('input[type="password"], input[name="password"]', process.env.BOXMAGIC_PASSWORD);
+  await page.click('button[type="submit"], button:has-text("Ingresar")');
   await page.waitForTimeout(4000);
   console.log('✅ Login exitoso');
 }
@@ -123,8 +123,6 @@ async function checkCupos() {
 
   try {
     const page = await browser.newPage();
-
-    // Login primero
     await login(page);
 
     const resultados = [];
