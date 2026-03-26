@@ -5,19 +5,19 @@ const twilio = require('twilio');
 const CONFIG = {
   email: 'ncerdagaldames@gmail.com',
   gimnasioID: 'oGDPQaGLb5',
-  claseID: 'wa0e5oo0v6',
   usuarioID: 'ep4Q9nWV4a',
   boxmagicUrl: 'https://members.boxmagic.app/g/oGDPQaGLb5/horarios',
-  horarioID: 'j80pXQEP0W',
-  horarios: {
-    1: [19, 20], // Lunes
-    2: [19, 20], // Martes
-    3: [20],     // Miércoles
-    5: [19],     // Viernes
-  }
+  // claseID y horarioID por día y hora
+  slots: [
+    { dia: 1, diaNombre: 'Lunes',     hora: 19, claseID: 'Vd0jxy2Lrx', horarioID: 'Kp0Myj6E08' },
+    { dia: 1, diaNombre: 'Lunes',     hora: 20, claseID: 'gjLKb2rDRe', horarioID: '6XD9krv342' },
+    { dia: 2, diaNombre: 'Martes',    hora: 19, claseID: 'wa0eq7P0v6', horarioID: 'gjLK569Q0R' },
+    { dia: 2, diaNombre: 'Martes',    hora: 20, claseID: '8VLZORg4za', horarioID: 'WkD16ZV3L3' },
+    { dia: 3, diaNombre: 'Miércoles', hora: 20, claseID: 'gjLKb2rDRe', horarioID: '8k0zNyjx0n' },
+    { dia: 5, diaNombre: 'Viernes',   hora: 19, claseID: 'ep4QnlK0aQ', horarioID: 'j80pX8AY0W' },
+  ]
 };
 
-const DIAS_NOMBRE = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
 const INTERVALO_MINUTOS = 15;
 const slotsReservados = new Set();
 
@@ -35,20 +35,22 @@ function getFechasDelMes() {
   cursor.setHours(0, 0, 0, 0);
 
   while (cursor <= finMes) {
-    const dia = cursor.getDay();
-    if (CONFIG.horarios[dia]) {
-      for (const hora of CONFIG.horarios[dia]) {
-        const fechaYMD = cursor.toISOString().split('T')[0];
-        const slotKey = `${fechaYMD}-${hora}`;
-        fechas.push({ diaNum: dia, diaNombre: DIAS_NOMBRE[dia], fechaYMD, hora, slotKey });
+    const diaNum = cursor.getDay();
+    const fechaYMD = cursor.toISOString().split('T')[0];
+
+    for (const slot of CONFIG.slots) {
+      if (slot.dia === diaNum) {
+        const slotKey = `${fechaYMD}-${slot.hora}`;
+        fechas.push({ ...slot, fechaYMD, slotKey });
       }
     }
     cursor.setDate(cursor.getDate() + 1);
   }
+
   return fechas;
 }
 
-async function checkSlot(page, { diaNombre, fechaYMD, hora, slotKey }) {
+async function checkSlot(page, { diaNombre, fechaYMD, hora, claseID, horarioID, slotKey }) {
   return new Promise(async (resolve) => {
     let resultado = null;
 
@@ -84,7 +86,7 @@ async function checkSlot(page, { diaNombre, fechaYMD, hora, slotKey }) {
 
     page.on('response', handler);
 
-    const url = `${CONFIG.boxmagicUrl}?instanciaID=i${fechaYMD}>${CONFIG.claseID}>${CONFIG.horarioID}`;
+    const url = `${CONFIG.boxmagicUrl}?instanciaID=i${fechaYMD}>${claseID}>${horarioID}`;
     await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(3000);
 
@@ -103,7 +105,8 @@ async function checkCupos() {
     return;
   }
 
-  console.log(`Hoy es ${DIAS_NOMBRE[hoy.getDay()]} ${hoy.toLocaleDateString('es-CL')}`);
+  const dias = [...new Set(fechasPendientes.map(f => `${f.diaNombre} ${f.fechaYMD}`))];
+  console.log(`Hoy es ${hoy.toLocaleDateString('es-CL', {weekday:'long', day:'numeric', month:'long'})}`);
   console.log(`📅 Monitoreando ${fechasPendientes.length} slot(s) pendientes este mes`);
 
   const browser = await chromium.launch({
@@ -133,7 +136,6 @@ async function checkCupos() {
         resultados.push({ ...slot, espacios: resultado.espacios });
       }
 
-      // Pausa entre slots para no saturar
       await new Promise(r => setTimeout(r, 1000));
     }
 
