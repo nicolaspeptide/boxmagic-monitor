@@ -11,14 +11,13 @@ const CONFIG = {
     1: [19, 20], // Lunes
     2: [19, 20], // Martes
     3: [20],     // Miércoles
-    5: [19, 20], // Viernes
+    5: [19],     // Viernes
   }
 };
 
 const DIAS_NOMBRE = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
 const INTERVALO_MINUTOS = 15;
 
-// Slots ya reservados — se van agregando automáticamente
 const slotsReservados = new Set();
 
 function getFechaChile() {
@@ -31,10 +30,8 @@ function getFechasDelMes() {
   const hoy = getFechaChile();
   const fechas = [];
 
-  // Último día del mes actual
   const finMes = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
 
-  // Iterar desde hoy hasta fin de mes
   const cursor = new Date(hoy);
   cursor.setHours(0, 0, 0, 0);
 
@@ -77,7 +74,6 @@ async function checkCupos() {
   const hoy = getFechaChile();
   const todasLasFechas = getFechasDelMes();
 
-  // Filtrar slots ya reservados
   const fechasPendientes = todasLasFechas.filter(f => !slotsReservados.has(f.slotKey));
 
   if (fechasPendientes.length === 0) {
@@ -85,7 +81,6 @@ async function checkCupos() {
     return;
   }
 
-  const diasUnicos = [...new Set(fechasPendientes.map(f => `${f.diaNombre} ${f.fechaYMD}`))];
   console.log(`Hoy es ${DIAS_NOMBRE[hoy.getDay()]} ${hoy.toLocaleDateString('es-CL')}`);
   console.log(`📅 Monitoreando ${fechasPendientes.length} slot(s) pendientes este mes`);
 
@@ -124,17 +119,15 @@ async function checkCupos() {
         for (const key in data.instancias) {
           const inst = data.instancias[key];
 
-          // Verificar hora
           const fechaInicio = new Date(inst.fechaInicio);
           const utc = fechaInicio.getTime() + fechaInicio.getTimezoneOffset() * 60000;
           const fechaChile = new Date(utc + (-3 * 60) * 60000);
           const horaClase = fechaChile.getHours();
           if (horaClase !== hora) continue;
 
-          // ¿Ya tengo reserva? → marcar como reservado
           const yaReservado = data.participantes && data.participantes[CONFIG.usuarioID];
           if (yaReservado) {
-            console.log(`⏭️  ${diaNombre} ${fechaYMD} ${hora}:00hrs → Ya reservado, se omite permanentemente`);
+            console.log(`⏭️  ${diaNombre} ${fechaYMD} ${hora}:00hrs → Ya reservado`);
             slotsReservados.add(slotKey);
             continue;
           }
@@ -150,7 +143,6 @@ async function checkCupos() {
         console.log(`⚠️  ${diaNombre} ${fechaYMD} ${hora}:00hrs → Sin datos`);
       }
 
-      // Pequeña pausa para no saturar la API
       await new Promise(r => setTimeout(r, 500));
 
     } catch(e) {
