@@ -17,8 +17,9 @@ const CONFIG = {
 
 const DIAS_NOMBRE = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
 const INTERVALO_MINUTOS = 15;
-
 const slotsReservados = new Set();
+
+let tokenActual = process.env.BOXMAGIC_TOKEN;
 
 function getFechaChile() {
   const ahora = new Date();
@@ -39,41 +40,44 @@ function getFechasDelMes() {
       for (const hora of CONFIG.horarios[dia]) {
         const fechaYMD = cursor.toISOString().split('T')[0];
         const slotKey = `${fechaYMD}-${hora}`;
-        fechas.push({
-          diaNum: dia,
-          diaNombre: DIAS_NOMBRE[dia],
-          fechaYMD,
-          hora,
-          slotKey
-        });
+        fechas.push({ diaNum: dia, diaNombre: DIAS_NOMBRE[dia], fechaYMD, hora, slotKey });
       }
     }
     cursor.setDate(cursor.getDate() + 1);
   }
-
   return fechas;
 }
 
-async function getToken() {
-  const loginRes = await fetch('https://api-bh.boxmagic.app/boxmagic/cuentas/ingresar', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'Gots-Ambiente': 'produccion',
-      'Gots-App': 'members',
-      'Gots-Dispositivo': 'web',
-      'Gots-Gimnasio': CONFIG.gimnasioID,
-      'Gots-Version': '5.72.41'
-    },
-    body: JSON.stringify({
-      email: process.env.BOXMAGIC_EMAIL,
-      pass: process.env.BOXMAGIC_PASSWORD
-    })
+function getHeaders(conAuth = true) {
+  const now = new Date().toISOString();
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'Gots-Ambiente': 'produccion',
+    'Gots-App': 'members',
+    'Gots-Dispositivo': 'web',
+    'Gots-Gimnasio': CONFIG.gimnasioID,
+    'Gots-Version': '5.72.41',
+    'Mdt-Gim': now,
+    'Mdt-Peg': now,
+    'Mdt-Usr': now,
+  };
+  if (conAuth) headers['Authorization'] = `Bearer ${tokenActual}`;
+  return headers;
+}
+
+async function renovarToken() {
+  const res = await fetch('https://api-bh.boxmagic.app/boxmagic/cuentas/tokenBM', {
+    method: 'GET',
+    headers: getHeaders(true)
   });
-  const data = await loginRes.json();
-  if (!data.token) throw new Error('No se pudo obtener token: ' + JSON.stringify(data));
-  return data.token;
+  const data = await res.json();
+  if (data.token) {
+    tokenActual = data.token;
+    console.log('🔄 Token renovado');
+    return true;
+  }
+  throw new Error('No se pudo renovar token: ' + JSON.stringify(data));
 }
 
 async function checkCupos() {
@@ -89,12 +93,10 @@ async function checkCupos() {
   console.log(`Hoy es ${DIAS_NOMBRE[hoy.getDay()]} ${hoy.toLocaleDateString('es-CL')}`);
   console.log(`📅 Monitoreando ${fechasPendientes.length} slot(s) pendientes este mes`);
 
-  let token;
   try {
-    token = await getToken();
-    console.log('✅ Token obtenido');
+    await renovarToken();
   } catch(e) {
-    console.error('❌ Error obteniendo token:', e.message);
+    console.error('❌ Error renovando token:', e.message);
     return;
   }
 
@@ -104,16 +106,7 @@ async function checkCupos() {
     try {
       const res = await fetch(`https://api-bh.boxmagic.app/boxmagic/gimnasio/${CONFIG.gimnasioID}/instancias/porIDs`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          'Gots-Ambiente': 'produccion',
-          'Gots-App': 'members',
-          'Gots-Dispositivo': 'web',
-          'Gots-Gimnasio': CONFIG.gimnasioID,
-          'Gots-Version': '5.72.41'
-        },
+        headers: getHeaders(true),
         body: JSON.stringify({
           instancias: [{
             fechaYMD,
