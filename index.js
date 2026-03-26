@@ -1,11 +1,12 @@
-const { chromium } = require('playwright-core');
 const nodemailer = require('nodemailer');
 const twilio = require('twilio');
 
 const CONFIG = {
   email: 'ncerdagaldames@gmail.com',
-  boxmagicUrl: 'https://members.boxmagic.app/g/oGDPQaGLb5/horarios',
+  gimnasioID: 'oGDPQaGLb5',
+  claseID: 'wa0e5oo0v6',
   usuarioID: 'ep4Q9nWV4a',
+  boxmagicUrl: 'https://members.boxmagic.app/g/oGDPQaGLb5/horarios',
   horarios: {
     1: [19, 20], // Lunes
     2: [19, 20], // Martes
@@ -17,93 +18,128 @@ const CONFIG = {
 const DIAS_NOMBRE = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
 const INTERVALO_MINUTOS = 15;
 
-function getDiasRestantes() {
+function getFechaChile() {
   const ahora = new Date();
   const utc = ahora.getTime() + ahora.getTimezoneOffset() * 60000;
-  const horaChile = new Date(utc + (-3 * 60) * 60000);
-  const diaHoy = horaChile.getDay();
+  return new Date(utc + (-3 * 60) * 60000);
+}
 
-  const diasMonitorear = Object.keys(CONFIG.horarios)
-    .map(Number)
-    .filter(dia => dia >= diaHoy);
+function getFechasAMonitorear() {
+  const hoy = getFechaChile();
+  const diaHoy = hoy.getDay();
+  const fechas = [];
 
-  return { diaHoy, diasMonitorear };
+  for (const [dia, horas] of Object.entries(CONFIG.horarios)) {
+    const diaNum = parseInt(dia);
+    if (diaNum < diaHoy) continue;
+
+    const diff = diaNum - diaHoy;
+    const fecha = new Date(hoy);
+    fecha.setDate(hoy.getDate() + diff);
+    const fechaYMD = fecha.toISOString().split('T')[0];
+
+    for (const hora of horas) {
+      fechas.push({ diaNum, diaNombre: DIAS_NOMBRE[diaNum], fechaYMD, hora });
+    }
+  }
+
+  return fechas;
+}
+
+async function getToken() {
+  const loginRes = await fetch('https://api-bh.boxmagic.app/boxmagic/cuentas/ingresar', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      correo: process.env.BOXMAGIC_EMAIL,
+      contrasena: process.env.BOXMAGIC_PASSWORD
+    })
+  });
+  const data = await loginRes.json();
+  if (!data.token) throw new Error('No se pudo obtener token: ' + JSON.stringify(data));
+  return data.token;
 }
 
 async function checkCupos() {
-  const { diaHoy, diasMonitorear } = getDiasRestantes();
+  const fechas = getFechasAMonitorear();
+  const hoy = getFechaChile();
 
-  if (diasMonitorear.length === 0) {
-    console.log('No quedan días que monitorear esta semana.');
+  if (fechas.length === 0) {
+    console.log('No hay horarios que monitorear esta semana.');
     return;
   }
 
-  console.log(`Hoy es ${DIAS_NOMBRE[diaHoy]} → Monitoreando: ${diasMonitorear.map(d => DIAS_NOMBRE[d]).join(', ')}`);
+  console.log(`Hoy es ${DIAS_NOMBRE[hoy.getDay()]} → Monitoreando: ${[...new Set(fechas.map(f => f.diaNombre))].join(', ')}`);
 
-  const browser = await chromium.launch({
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '/ms-playwright/chromium-1091/chrome-linux/chrome',
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu']
-  });
-
+  let token;
   try {
-    const page = await browser.newPage();
-    const resultados = [];
+    token = await getToken();
+    console.log('✅ Token obtenido');
+  } catch(e) {
+    console.error('❌ Error obteniendo token:', e.message);
+    return;
+  }
 
-    page.on('response', async (response) => {
-      if (response.url().includes('porIDs')) {
-        try {
-          const data = await response.json();
-          if (data.instancias) {
-            for (const key in data.instancias) {
-              const inst = data.instancias[key];
+  const resultados = [];
 
-              const fechaInicio = new Date(inst.fechaInicio);
-              const utc = fechaInicio.getTime() + fechaInicio.getTimezoneOffset() * 60000;
-              const fechaChile = new Date(utc + (-3 * 60) * 60000);
-              const diaClase = fechaChile.getDay();
-              const horaClase = fechaChile.getHours();
+  for (const { diaNombre, fechaYMD, hora } of fechas) {
+    try {
+      const res = await fetch(`https://api-bh.boxmagic.app/boxmagic/gimnasio/${CONFIG.gimnasioID}/instancias/porIDs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'Gots-Gimnasio': CONFIG.gimnasioID
+        },
+        body: JSON.stringify({
+          instancias: [{
+            fechaYMD,
+            claseID: CONFIG.claseID,
+            horarioID: 'j80pXQEP0W' // se actualiza abajo
+          }]
+        })
+      });
 
-              if (!diasMonitorear.includes(diaClase)) continue;
+      const data = await res.json();
 
-              const horasDia = CONFIG.horarios[diaClase] || [];
-              if (!horasDia.includes(horaClase)) continue;
+      if (data.instancias) {
+        for (const key in data.instancias) {
+          const inst = data.instancias[key];
 
-              const yaReservado = data.participantes && data.participantes[CONFIG.usuarioID];
-              if (yaReservado) {
-                console.log(`⏭️  ${DIAS_NOMBRE[diaClase]} ${horaClase}:00hrs → Ya tienes reserva, se omite.`);
-                continue;
-              }
+          // Verificar hora
+          const fechaInicio = new Date(inst.fechaInicio);
+          const utc = fechaInicio.getTime() + fechaInicio.getTimezoneOffset() * 60000;
+          const fechaChile = new Date(utc + (-3 * 60) * 60000);
+          const horaClase = fechaChile.getHours();
 
-              const espacios = inst.espaciosDisponibles;
-              console.log(`🔍 ${DIAS_NOMBRE[diaClase]} ${horaClase}:00hrs → ${espacios} espacio(s) disponible(s)`);
+          if (horaClase !== hora) continue;
 
-              if (espacios > 0) {
-                resultados.push({ dia: DIAS_NOMBRE[diaClase], hora: horaClase, espacios });
-              }
-            }
+          // ¿Ya tengo reserva?
+          const yaReservado = data.participantes && data.participantes[CONFIG.usuarioID];
+          if (yaReservado) {
+            console.log(`⏭️  ${diaNombre} ${hora}:00hrs → Ya tienes reserva`);
+            continue;
           }
-        } catch(e) {}
+
+          const espacios = inst.espaciosDisponibles;
+          console.log(`🔍 ${diaNombre} ${hora}:00hrs → ${espacios} espacio(s)`);
+
+          if (espacios > 0) {
+            resultados.push({ diaNombre, hora, espacios });
+          }
+        }
       }
-    });
-
-    await page.goto(CONFIG.boxmagicUrl, {
-      waitUntil: 'networkidle',
-      timeout: 60000
-    });
-
-    await page.waitForTimeout(5000);
-
-    if (resultados.length > 0) {
-      for (const r of resultados) {
-        await sendNotification(r.dia, r.hora, r.espacios);
-      }
-    } else {
-      console.log('Sin cupos disponibles.');
+    } catch(e) {
+      console.error(`❌ Error consultando ${diaNombre} ${hora}hrs:`, e.message);
     }
+  }
 
-  } finally {
-    await browser.close();
+  if (resultados.length > 0) {
+    for (const r of resultados) {
+      await sendNotification(r.diaNombre, r.hora, r.espacios);
+    }
+  } else {
+    console.log('Sin cupos disponibles.');
   }
 }
 
@@ -137,7 +173,7 @@ async function sendNotification(dia, hora, cupos) {
 
 async function loop() {
   while (true) {
-    console.log(`\n⏰ ${new Date().toLocaleString('es-CL', {timeZone: 'America/Santiago'})} — Iniciando revisión...`);
+    console.log(`\n⏰ ${getFechaChile().toLocaleString('es-CL')} — Iniciando revisión...`);
     await checkCupos().catch(console.error);
     console.log(`⏳ Próxima revisión en ${INTERVALO_MINUTOS} minutos.`);
     await new Promise(r => setTimeout(r, INTERVALO_MINUTOS * 60 * 1000));
