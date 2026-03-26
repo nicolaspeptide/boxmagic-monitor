@@ -18,29 +18,42 @@ const CONFIG = {
 const DIAS_NOMBRE = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
 const INTERVALO_MINUTOS = 15;
 
+// Slots ya reservados — se van agregando automáticamente
+const slotsReservados = new Set();
+
 function getFechaChile() {
   const ahora = new Date();
   const utc = ahora.getTime() + ahora.getTimezoneOffset() * 60000;
   return new Date(utc + (-3 * 60) * 60000);
 }
 
-function getFechasAMonitorear() {
+function getFechasDelMes() {
   const hoy = getFechaChile();
-  const diaHoy = hoy.getDay();
   const fechas = [];
 
-  for (const [dia, horas] of Object.entries(CONFIG.horarios)) {
-    const diaNum = parseInt(dia);
-    if (diaNum < diaHoy) continue;
+  // Último día del mes actual
+  const finMes = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
 
-    const diff = diaNum - diaHoy;
-    const fecha = new Date(hoy);
-    fecha.setDate(hoy.getDate() + diff);
-    const fechaYMD = fecha.toISOString().split('T')[0];
+  // Iterar desde hoy hasta fin de mes
+  const cursor = new Date(hoy);
+  cursor.setHours(0, 0, 0, 0);
 
-    for (const hora of horas) {
-      fechas.push({ diaNum, diaNombre: DIAS_NOMBRE[diaNum], fechaYMD, hora });
+  while (cursor <= finMes) {
+    const dia = cursor.getDay();
+    if (CONFIG.horarios[dia]) {
+      for (const hora of CONFIG.horarios[dia]) {
+        const fechaYMD = cursor.toISOString().split('T')[0];
+        const slotKey = `${fechaYMD}-${hora}`;
+        fechas.push({
+          diaNum: dia,
+          diaNombre: DIAS_NOMBRE[dia],
+          fechaYMD,
+          hora,
+          slotKey
+        });
+      }
     }
+    cursor.setDate(cursor.getDate() + 1);
   }
 
   return fechas;
@@ -61,15 +74,20 @@ async function getToken() {
 }
 
 async function checkCupos() {
-  const fechas = getFechasAMonitorear();
   const hoy = getFechaChile();
+  const todasLasFechas = getFechasDelMes();
 
-  if (fechas.length === 0) {
-    console.log('No hay horarios que monitorear esta semana.');
+  // Filtrar slots ya reservados
+  const fechasPendientes = todasLasFechas.filter(f => !slotsReservados.has(f.slotKey));
+
+  if (fechasPendientes.length === 0) {
+    console.log('🎉 ¡Todos los slots del mes están reservados!');
     return;
   }
 
-  console.log(`Hoy es ${DIAS_NOMBRE[hoy.getDay()]} → Monitoreando: ${[...new Set(fechas.map(f => f.diaNombre))].join(', ')}`);
+  const diasUnicos = [...new Set(fechasPendientes.map(f => `${f.diaNombre} ${f.fechaYMD}`))];
+  console.log(`Hoy es ${DIAS_NOMBRE[hoy.getDay()]} ${hoy.toLocaleDateString('es-CL')}`);
+  console.log(`📅 Monitoreando ${fechasPendientes.length} slot(s) pendientes este mes`);
 
   let token;
   try {
@@ -82,7 +100,7 @@ async function checkCupos() {
 
   const resultados = [];
 
-  for (const { diaNombre, fechaYMD, hora } of fechas) {
+  for (const { diaNombre, fechaYMD, hora, slotKey } of fechasPendientes) {
     try {
       const res = await fetch(`https://api-bh.boxmagic.app/boxmagic/gimnasio/${CONFIG.gimnasioID}/instancias/porIDs`, {
         method: 'POST',
@@ -106,44 +124,50 @@ async function checkCupos() {
         for (const key in data.instancias) {
           const inst = data.instancias[key];
 
+          // Verificar hora
           const fechaInicio = new Date(inst.fechaInicio);
           const utc = fechaInicio.getTime() + fechaInicio.getTimezoneOffset() * 60000;
           const fechaChile = new Date(utc + (-3 * 60) * 60000);
           const horaClase = fechaChile.getHours();
-
           if (horaClase !== hora) continue;
 
+          // ¿Ya tengo reserva? → marcar como reservado
           const yaReservado = data.participantes && data.participantes[CONFIG.usuarioID];
           if (yaReservado) {
-            console.log(`⏭️  ${diaNombre} ${hora}:00hrs → Ya tienes reserva`);
+            console.log(`⏭️  ${diaNombre} ${fechaYMD} ${hora}:00hrs → Ya reservado, se omite permanentemente`);
+            slotsReservados.add(slotKey);
             continue;
           }
 
           const espacios = inst.espaciosDisponibles;
-          console.log(`🔍 ${diaNombre} ${hora}:00hrs → ${espacios} espacio(s)`);
+          console.log(`🔍 ${diaNombre} ${fechaYMD} ${hora}:00hrs → ${espacios} espacio(s)`);
 
           if (espacios > 0) {
-            resultados.push({ diaNombre, hora, espacios });
+            resultados.push({ diaNombre, fechaYMD, hora, espacios });
           }
         }
       } else {
-        console.log(`⚠️  ${diaNombre} ${hora}:00hrs → Sin respuesta`);
+        console.log(`⚠️  ${diaNombre} ${fechaYMD} ${hora}:00hrs → Sin datos`);
       }
+
+      // Pequeña pausa para no saturar la API
+      await new Promise(r => setTimeout(r, 500));
+
     } catch(e) {
-      console.error(`❌ Error consultando ${diaNombre} ${hora}hrs:`, e.message);
+      console.error(`❌ Error ${diaNombre} ${fechaYMD} ${hora}hrs:`, e.message);
     }
   }
 
   if (resultados.length > 0) {
     for (const r of resultados) {
-      await sendNotification(r.diaNombre, r.hora, r.espacios);
+      await sendNotification(r.diaNombre, r.fechaYMD, r.hora, r.espacios);
     }
   } else {
     console.log('Sin cupos disponibles.');
   }
 }
 
-async function sendNotification(dia, hora, cupos) {
+async function sendNotification(dia, fechaYMD, hora, cupos) {
   const transporter = nodemailer.createTransporter({
     service: 'gmail',
     auth: {
@@ -155,20 +179,20 @@ async function sendNotification(dia, hora, cupos) {
   await transporter.sendMail({
     from: process.env.GMAIL_USER,
     to: CONFIG.email,
-    subject: `🥊 ¡Cupo disponible ${dia} ${hora}:00hrs en BoxMagic!`,
+    subject: `🥊 ¡Cupo disponible ${dia} ${fechaYMD} ${hora}:00hrs!`,
     html: `<h2>¡Hay ${cupos} cupo(s) disponible(s)!</h2>
-           <p>${dia} ${hora}:00-${hora+1}:00hrs tiene espacio ahora.</p>
+           <p>${dia} ${fechaYMD} — ${hora}:00-${hora+1}:00hrs</p>
            <a href="${CONFIG.boxmagicUrl}">Reservar ahora →</a>`
   });
-  console.log(`📧 Email enviado: ${dia} ${hora}:00hrs`);
+  console.log(`📧 Email enviado: ${dia} ${fechaYMD} ${hora}:00hrs`);
 
   const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
   await client.messages.create({
     from: 'whatsapp:+14155238886',
     to: process.env.TWILIO_WHATSAPP_TO,
-    body: `🥊 ¡Cupo disponible en BoxMagic!\n${dia} ${hora}:00-${hora+1}:00hrs\n${cupos} espacio(s)\nReserva: ${CONFIG.boxmagicUrl}`
+    body: `🥊 ¡Cupo disponible!\n${dia} ${fechaYMD}\n${hora}:00-${hora+1}:00hrs\n${cupos} espacio(s)\nReserva: ${CONFIG.boxmagicUrl}`
   });
-  console.log(`💬 WhatsApp enviado: ${dia} ${hora}:00hrs`);
+  console.log(`💬 WhatsApp enviado: ${dia} ${fechaYMD} ${hora}:00hrs`);
 }
 
 async function loop() {
