@@ -94,7 +94,7 @@ async function checkSlot(page, { diaNombre, fechaYMD, hora, claseID, horarioID }
     };
 
     page.on('response', handler);
-    const url = `${CONFIG.boxmagicUrl}?instanciaID=i${fechaYMD}>${claseID}>${horarioID}`;
+    const url = `${CONFIG.boxmagicUrl}?instanciaID=i${fechaYMD}%3E${claseID}%3E${horarioID}`;
     await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(3000);
     page.off('response', handler);
