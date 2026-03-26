@@ -11,7 +11,7 @@ const CONFIG = {
     1: [19, 20], // Lunes
     2: [19, 20], // Martes
     3: [20],     // Miércoles
-    5: [19],     // Viernes
+    5: [19, 20], // Viernes
   }
 };
 
@@ -51,8 +51,8 @@ async function getToken() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      correo: process.env.BOXMAGIC_EMAIL,
-      contrasena: process.env.BOXMAGIC_PASSWORD
+      email: process.env.BOXMAGIC_EMAIL,
+      pass: process.env.BOXMAGIC_PASSWORD
     })
   });
   const data = await loginRes.json();
@@ -95,7 +95,7 @@ async function checkCupos() {
           instancias: [{
             fechaYMD,
             claseID: CONFIG.claseID,
-            horarioID: 'j80pXQEP0W' // se actualiza abajo
+            horarioID: 'j80pXQEP0W'
           }]
         })
       });
@@ -106,7 +106,6 @@ async function checkCupos() {
         for (const key in data.instancias) {
           const inst = data.instancias[key];
 
-          // Verificar hora
           const fechaInicio = new Date(inst.fechaInicio);
           const utc = fechaInicio.getTime() + fechaInicio.getTimezoneOffset() * 60000;
           const fechaChile = new Date(utc + (-3 * 60) * 60000);
@@ -114,7 +113,6 @@ async function checkCupos() {
 
           if (horaClase !== hora) continue;
 
-          // ¿Ya tengo reserva?
           const yaReservado = data.participantes && data.participantes[CONFIG.usuarioID];
           if (yaReservado) {
             console.log(`⏭️  ${diaNombre} ${hora}:00hrs → Ya tienes reserva`);
@@ -128,6 +126,8 @@ async function checkCupos() {
             resultados.push({ diaNombre, hora, espacios });
           }
         }
+      } else {
+        console.log(`⚠️  ${diaNombre} ${hora}:00hrs → Sin respuesta`);
       }
     } catch(e) {
       console.error(`❌ Error consultando ${diaNombre} ${hora}hrs:`, e.message);
