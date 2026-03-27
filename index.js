@@ -65,9 +65,19 @@ async function getPlanActivo(page) {
       if (response.url().includes('perfilEnGimnasio')) {
         try {
           const data = await response.json();
+
           if (data.perfilEnGimnasio?.membresias) {
             const membresias = data.perfilEnGimnasio.membresias;
             const reservas = data.perfilEnGimnasio.reservas || {};
+
+            // Debug
+            for (const key in membresias) {
+              const m = membresias[key];
+              console.log(`🔍 Membresía: ${key}`);
+              console.log(`   activa: ${m.activa}`);
+              console.log(`   planNombre: ${m.planNombre}`);
+              console.log(`   finVigencia: ${m.finVigencia}`);
+            }
 
             // Buscar membresía activa con plan de sesiones
             for (const key in membresias) {
@@ -75,24 +85,28 @@ async function getPlanActivo(page) {
               if (!m.activa) continue;
               if (!m.planNombre?.includes('Sesiones')) continue;
 
-              // Fecha vigencia
               const finVigencia = new Date(m.finVigencia);
               const hoy = getFechaChile();
               if (finVigencia < hoy) continue;
 
-              // Contar reservas activas de esta membresía en período actual
+              // Reservas activas de esta membresía
               const reservasDelPlan = Object.values(reservas).filter(r =>
-                r.membresiaID === m.membresiaID &&
-                r.fechaYMD >= hoy.toISOString().split('T')[0].substring(0, 7) // mismo mes
+                r.membresiaID === m.membresiaID
               );
 
-              // Obtener fechas ya reservadas
+              // Fechas ya reservadas
               const fechasReservadas = new Set(
-                reservasDelPlan.map(r => `${r.fechaYMD}-${new Date(r.fechaInicio).getHours()}`)
+                reservasDelPlan.map(r => {
+                  const fechaInicio = new Date(r.fechaInicio);
+                  const utc = fechaInicio.getTime() + fechaInicio.getTimezoneOffset() * 60000;
+                  const fechaChile = new Date(utc + (-3 * 60) * 60000);
+                  return `${r.fechaYMD}-${fechaChile.getHours()}`;
+                })
               );
 
-              // Cupos disponibles = total plan - agendados
-              const totalCupos = parseInt(m.planNombre) || 16;
+              // Cupos
+              const match = m.planNombre.match(/(\d+)\s*Sesiones/);
+              const totalCupos = match ? parseInt(match[1]) : 16;
               const cuposUsados = reservasDelPlan.length;
               const cuposDisponibles = totalCupos - cuposUsados;
 
@@ -107,12 +121,17 @@ async function getPlanActivo(page) {
               };
 
               console.log(`📋 Plan: ${m.planNombre}`);
-              console.log(`📅 Vigente hasta: ${new Date(m.finVigencia).toLocaleDateString('es-CL')}`);
+              console.log(`📅 Vigente hasta: ${finVigencia.toLocaleDateString('es-CL')}`);
               console.log(`🎯 Cupos: ${cuposUsados}/${totalCupos} usados, ${cuposDisponibles} disponibles`);
               break;
             }
+          } else {
+            console.log('❌ No se encontró perfilEnGimnasio.membresias');
+            console.log('Keys disponibles:', JSON.stringify(Object.keys(data)));
           }
-        } catch(e) {}
+        } catch(e) {
+          console.error('Error parseando perfilEnGimnasio:', e.message);
+        }
       }
     };
 
@@ -182,7 +201,6 @@ async function checkCupos() {
     const page = await browser.newPage();
     await login(page);
 
-    // Obtener plan activo
     const plan = await getPlanActivo(page);
 
     if (!plan) {
@@ -195,13 +213,8 @@ async function checkCupos() {
       return;
     }
 
-    // Generar slots del período del plan
     const todasLasFechas = getFechasEnPeriodo(hoy, new Date(plan.finVigencia));
-
-    // Filtrar slots ya reservados
-    const fechasPendientes = todasLasFechas.filter(f =>
-      !plan.fechasReservadas.has(f.slotKey)
-    );
+    const fechasPendientes = todasLasFechas.filter(f => !plan.fechasReservadas.has(f.slotKey));
 
     console.log(`📅 ${fechasPendientes.length} slot(s) pendientes hasta ${new Date(plan.finVigencia).toLocaleDateString('es-CL')}`);
 
