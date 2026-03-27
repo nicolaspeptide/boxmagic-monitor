@@ -1,5 +1,5 @@
 const { chromium } = require('playwright-core');
-const nodemailer = require('nodemailer');
+const nodemailer = require('nodemailer').default || require('nodemailer');
 const twilio = require('twilio');
 
 const CONFIG = {
@@ -113,7 +113,10 @@ async function checkCupos() {
     }
 
     // ── 2. Cupos disponibles ──────────────────────────────────────────────
-    const cuposDisponibles = Object.keys(perfil.reservasNoAsignadas || {}).length;
+    const todasRNA = Object.values(perfil.reservasNoAsignadas || {});
+    const rnaDelPlan = todasRNA.filter(r => !r.membresiaID || r.membresiaID === planActivo.membresiaID);
+    const cuposDisponibles = rnaDelPlan.length > 0 ? rnaDelPlan.length : todasRNA.length;
+    console.log(`📦 reservasNoAsignadas: total=${todasRNA.length}, del plan=${rnaDelPlan.length}`);
 
     console.log(`📋 Plan: ${planActivo.planNombre}`);
     console.log(`📅 Vigente hasta: ${planActivo.finVigencia.toLocaleDateString('es-CL')}`);
@@ -174,7 +177,7 @@ async function sendNotification(slots, cuposDisponibles) {
     `<li>${s.diaNombre} ${s.fechaYMD} — ${s.hora}:00-${s.hora+1}:00hrs</li>`
   ).join('');
 
-  const transporter = nodemailer.createTransporter({
+  const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_PASS }
   });
