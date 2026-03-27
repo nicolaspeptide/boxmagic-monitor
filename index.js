@@ -1,12 +1,13 @@
 const { chromium } = require('playwright-core');
 const twilio = require('twilio');
+const fs = require('fs');
 
 const CONFIG = {
   gimnasioID:  'oGDPQaGLb5',
   usuarioID:   'ep4Q9nWV4a',
-  loginUrl:    'https://members.boxmagic.app/a/g?o=pi-e',
-  perfilUrl:   'https://members.boxmagic.app/g/oGDPQaGLb5/perfil',
-  horarioUrl:  'https://members.boxmagic.app/g/oGDPQaGLb5/horarios',
+  loginUrl:    '<https://members.boxmagic.app/a/g?o=pi-e>',
+  perfilUrl:   '<https://members.boxmagic.app/g/oGDPQaGLb5/perfil>',
+  horarioUrl:  '<https://members.boxmagic.app/g/oGDPQaGLb5/horarios>',
 };
 
 // Revisión cada 15 minutos
@@ -14,7 +15,6 @@ const INTERVALO_MS = 15 * 60 * 1000;
 
 // Anti-spam persistente: sobrevive reinicios de Railway
 const ESTADO_FILE = '/tmp/boxmagic_ultimo_estado.txt';
-const fs = require('fs');
 
 function leerUltimoMensaje() {
   try { return fs.readFileSync(ESTADO_FILE, 'utf8'); } catch(e) { return null; }
@@ -24,11 +24,17 @@ function guardarUltimoMensaje(msg) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Fecha/hora actual en Chile (UTC-3)
+// Fecha/hora actual en Chile (zona horaria correcta con DST)
 // ─────────────────────────────────────────────────────────────────────────────
 function ahoraChile() {
-  const ahora = new Date();
-  return new Date(ahora.getTime() + (ahora.getTimezoneOffset() + (-3 * 60)) * 60000);
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Santiago' }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Convertir una fecha UTC a hora Chile
+// ─────────────────────────────────────────────────────────────────────────────
+function aChile(fecha) {
+  return new Date(fecha.toLocaleString('en-US', { timeZone: 'America/Santiago' }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -36,10 +42,10 @@ function ahoraChile() {
 // ─────────────────────────────────────────────────────────────────────────────
 async function login(page) {
   console.log('🔐 Iniciando login...');
-  await page.goto(CONFIG.loginUrl, { waitUntil: 'networkidle', timeout: 60000 });
-  await page.waitForTimeout(2000);
-  await page.fill('input[type="email"], input[name="email"], input:first-of-type', process.env.BOXMAGIC_EMAIL);
-  await page.fill('input[type="password"], input[name="password"]', process.env.BOXMAGIC_PASSWORD);
+  await page.goto(CONFIG.loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForSelector('input[type="email"]', { timeout: 15000 });
+  await page.fill('input[type="email"]', process.env.BOXMAGIC_EMAIL);
+  await page.fill('input[type="password"]', process.env.BOXMAGIC_PASSWORD);
   await page.click('button[type="submit"], button:has-text("Ingresar")');
   await page.waitForTimeout(4000);
   console.log('✅ Login exitoso');
@@ -49,22 +55,23 @@ async function login(page) {
 // Obtener perfil completo interceptando la respuesta JSON
 // ─────────────────────────────────────────────────────────────────────────────
 async function getPerfil(page) {
-  return new Promise(async (resolve) => {
-    let perfil = null;
-    const handler = async (res) => {
-      try {
-        const ct = res.headers()['content-type'] || '';
-        if (!ct.includes('application/json')) return;
-        const data = await res.json();
-        if (data.perfilEnGimnasio?.membresias) perfil = data.perfilEnGimnasio;
-      } catch(e) {}
-    };
-    page.on('response', handler);
+  let perfil = null;
+  const handler = async (res) => {
+    try {
+      const ct = res.headers()['content-type'] || '';
+      if (!ct.includes('application/json')) return;
+      const data = await res.json();
+      if (data.perfilEnGimnasio?.membresias) perfil = data.perfilEnGimnasio;
+    } catch(e) {}
+  };
+  page.on('response', handler);
+  try {
     await page.goto(CONFIG.perfilUrl, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(3000);
+  } finally {
     page.off('response', handler);
-    resolve(perfil);
-  });
+  }
+  return perfil;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -109,19 +116,13 @@ async function revisar() {
     console.log(`📋 Plan: ${plan.planNombre} | Vigente hasta: ${finVigencia.toLocaleDateString('es-CL')}`);
 
     // ── 2. Cupos sin agendar ──────────────────────────────────────────────
-    // reservasNoAsignadas = cupos comprados que aún no tienen clase asignada.
-    // Son los cupos que Nicolás puede usar para reservar.
-    // Contamos TODAS porque son del plan activo (el gimnasio solo muestra las vigentes).
-    // reservasNoAsignadas = fuente más confiable para cupos sin agendar
-    // Son exactamente los cupos comprados sin fecha asignada
-    // El número exacto (3 vs 5) no afecta la funcionalidad — lo que importa es > 0
+    // reservasNoAsignadas = cupos comprados sin clase asignada
     const cuposSinAgendar = Object.keys(perfil.reservasNoAsignadas || {}).length;
-    console.log(`🎯 Cupos sin agendar: ${cuposSinAgendar} (reservasNoAsignadas)`);
     console.log(`🎯 Cupos sin agendar: ${cuposSinAgendar}`);
 
     if (cuposSinAgendar === 0) {
       console.log('✅ Sin cupos disponibles — nada que notificar');
-      guardarUltimoMensaje(''); // resetear para notificar cuando vuelvan cupos
+      guardarUltimoMensaje('');
       return;
     }
 
@@ -129,15 +130,12 @@ async function revisar() {
     const reservas = Object.values(perfil.reservas || {});
     const yaAgendadas = new Set(
       reservas.map(r => {
-        // Convertir fechaInicio a hora Chile
-        const fi  = new Date(r.fechaInicio);
-        const fc  = new Date(fi.getTime() + (fi.getTimezoneOffset() + (-3 * 60)) * 60000);
+        const fc = aChile(new Date(r.fechaInicio));
         return `${r.fechaYMD}-${fc.getHours()}`;
       })
     );
 
     // ── 4. Próximas clases SIN reservar (desde hoy hasta fin de vigencia) ─
-    // Iterar día a día y cruzar con los slots configurados
     const proximas = [];
     const cursor = new Date(hoy);
     cursor.setHours(0, 0, 0, 0);
@@ -199,15 +197,23 @@ async function revisar() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Loop principal
+// Loop principal con graceful shutdown
 // ─────────────────────────────────────────────────────────────────────────────
+let running = true;
+
 async function loop() {
-  while (true) {
+  while (running) {
     console.log(`\n⏰ ${ahoraChile().toLocaleString('es-CL')} — Iniciando revisión...`);
     await revisar();
+    if (!running) break;
     console.log(`⏳ Próxima revisión en 15 minutos.`);
     await new Promise(r => setTimeout(r, INTERVALO_MS));
   }
+  console.log('🛑 Monitor detenido.');
+  process.exit(0);
 }
+
+process.on('SIGTERM', () => { running = false; });
+process.on('SIGINT', () => { running = false; });
 
 loop();
