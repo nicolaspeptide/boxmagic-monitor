@@ -18,12 +18,12 @@ const TWILIO = {
 };
 
 const SLOTS = [
-  { dia: 1, hora: '19:00', nombre: 'Lunes 19h',     claseID: 'Vd0jxy2Lrx', horarioID: 'Kp0Myj6E08' },
-  { dia: 1, hora: '20:00', nombre: 'Lunes 20h',     claseID: 'gjLKb2rDRe', horarioID: '6XD9krv342' },
-  { dia: 2, hora: '19:00', nombre: 'Martes 19h',    claseID: 'wa0eq7P0v6', horarioID: 'gjLK569Q0R' },
-  { dia: 2, hora: '20:00', nombre: 'Martes 20h',    claseID: '8VLZORg4za', horarioID: 'WkD16ZV3L3' },
-  { dia: 3, hora: '20:00', nombre: 'Miercoles 20h', claseID: 'gjLKb2rDRe', horarioID: '8k0zNyjx0n' },
-  { dia: 5, hora: '19:00', nombre: 'Viernes 19h',   claseID: 'ep4QnlK0aQ', horarioID: 'j80pX8AY0W' },
+  { dia: 1, hora: '19:00', nombre: 'Lunes 19h',     horarioID: 'Kp0Myj6E08' },
+  { dia: 1, hora: '20:00', nombre: 'Lunes 20h',     horarioID: '6XD9krv342' },
+  { dia: 2, hora: '19:00', nombre: 'Martes 19h',    horarioID: 'gjLK569Q0R' },
+  { dia: 2, hora: '20:00', nombre: 'Martes 20h',    horarioID: 'WkD16ZV3L3' },
+  { dia: 3, hora: '20:00', nombre: 'Miercoles 20h', horarioID: '8k0zNyjx0n' },
+  { dia: 5, hora: '19:00', nombre: 'Viernes 19h',   horarioID: 'j80pX8AY0W' },
 ];
 
 const ANTI_SPAM_FILE = '/app/avisos_enviados.json';
@@ -88,6 +88,110 @@ function obtenerReservasYVigencia(perfil) {
   return { reservasAgendadas: reservasAgendadas, finVigencia: new Date(membresiaActiva.finVigencia) };
 }
 
+// Leer disponibilidad del DOM de la pagina de horarios
+async function leerDisponibilidadDOM(page) {
+  return await page.evaluate(function() {
+    var resultado = {};
+
+    // Buscar todas las tarjetas de clase visibles
+    // BoxMagic muestra tarjetas con la fecha en el titulo y participantes/capacidad
+    var tarjetas = document.querySelectorAll('[class*="card"], [class*="session"], [class*="clase"], [class*="instancia"], article, .presencial');
+
+    // Si no hay tarjetas especificas, buscar por contenido
+    if (tarjetas.length === 0) {
+      tarjetas = document.querySelectorAll('div[class]');
+    }
+
+    tarjetas.forEach(function(tarjeta) {
+      var texto = tarjeta.innerText || '';
+
+      // Buscar el instanciaID en los links o atributos
+      var links = tarjeta.querySelectorAll('a[href*="instanciaID"]');
+      links.forEach(function(link) {
+        var href = link.href || '';
+        var match = href.match(/instanciaID=([^&]+)/);
+        if (match) {
+          var instanciaID = decodeURIComponent(match[1]);
+
+          // Extraer participantes
+          var partMatch = texto.match(/(\d+)\s*\/\s*(\d+)\s*Participantes/i) ||
+                          texto.match(/Participantes\s*(\d+)\/(\d+)/i) ||
+                          texto.match(/(\d+)\s*Participantes/i);
+
+          var capacidadCompleta = texto.toLowerCase().includes('capacidad completa');
+          var participantes = 0;
+          var cuposMax = 6;
+
+          if (partMatch) {
+            if (partMatch[2]) {
+              participantes = parseInt(partMatch[1]);
+              cuposMax = parseInt(partMatch[2]);
+            } else {
+              participantes = parseInt(partMatch[1]);
+            }
+          }
+
+          resultado[instanciaID] = {
+            instanciaID: instanciaID,
+            participantes: participantes,
+            cuposMax: cuposMax,
+            capacidadCompleta: capacidadCompleta,
+            textoCompleto: texto.slice(0, 200),
+          };
+        }
+      });
+
+      // Tambien buscar por href en la tarjeta misma
+      var hrefTarjeta = tarjeta.querySelector && tarjeta.querySelector('[href*="instanciaID"]');
+      if (!hrefTarjeta && tarjeta.href && tarjeta.href.includes('instanciaID')) {
+        hrefTarjeta = tarjeta;
+      }
+    });
+
+    // Buscar directamente todos los links con instanciaID en la pagina
+    var todosLosLinks = document.querySelectorAll('a[href*="instanciaID"], [href*="instanciaID"]');
+    todosLosLinks.forEach(function(link) {
+      var href = link.href || link.getAttribute('href') || '';
+      var match = href.match(/instanciaID=([^&\s]+)/);
+      if (match) {
+        var instanciaID = decodeURIComponent(match[1]);
+        if (!resultado[instanciaID]) {
+          // Buscar el contenedor padre con info de participantes
+          var contenedor = link.closest('[class]') || link.parentElement;
+          var texto = '';
+          for (var i = 0; i < 5; i++) {
+            if (contenedor) {
+              texto = contenedor.innerText || '';
+              if (texto.includes('Participantes') || texto.includes('capacidad')) break;
+              contenedor = contenedor.parentElement;
+            }
+          }
+
+          var capacidadCompleta = texto.toLowerCase().includes('capacidad completa');
+          var partMatch = texto.match(/(\d+)\s*\/\s*(\d+)\s*Participantes/i) ||
+                          texto.match(/(\d+)\s*Participantes/i);
+          var participantes = 0;
+          var cuposMax = 6;
+          if (partMatch) {
+            participantes = parseInt(partMatch[1]);
+            if (partMatch[2]) cuposMax = parseInt(partMatch[2]);
+          }
+
+          resultado[instanciaID] = {
+            instanciaID: instanciaID,
+            participantes: participantes,
+            cuposMax: cuposMax,
+            capacidadCompleta: capacidadCompleta,
+            textoCompleto: texto.slice(0, 200),
+          };
+        }
+      }
+    });
+
+    return resultado;
+  });
+}
+
 async function main() {
   console.log(new Date().toLocaleString('es-CL') + ' - Iniciando revision...');
   limpiarAvisosViejos();
@@ -95,10 +199,6 @@ async function main() {
   const browser = await chromium.launch({ args: ['--no-sandbox'] });
   const context = await browser.newContext({ serviceWorkers: 'block' });
   const page = await context.newPage();
-
-  // Deshabilitar cache igual que "Disable cache" en DevTools
-  const cdp = await context.newCDPSession(page);
-  await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
 
   let perfilData = null;
 
@@ -137,7 +237,7 @@ async function main() {
     console.log('Plan vigente hasta: ' + finVigencia.toISOString().slice(0, 10));
     console.log('Reservas agendadas: ' + reservasAgendadas.size);
 
-    // Determinar fechas pendientes por slot
+    // Determinar fechas pendientes
     const fechasPendientesPorSlot = [];
     for (const slot of SLOTS) {
       const fechas = obtenerProximasFechas(slot, finVigencia);
@@ -163,66 +263,127 @@ async function main() {
       return;
     }
 
-    // Fechas unicas a revisar
-    const fechasUnicas = new Set();
-    for (const item of fechasPendientesPorSlot) {
-      for (const fecha of item.fechas) {
-        fechasUnicas.add(fecha);
+    // Ir a horarios y navegar semana por semana leyendo el DOM
+    await page.goto(CONFIG.horariosUrl, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(4000);
+
+    const disponibilidad = {};
+    let semanasNavigadas = 0;
+    const maxSemanas = 8;
+
+    while (semanasNavigadas < maxSemanas) {
+      // Leer que semana estamos viendo
+      const semanaInfo = await page.evaluate(function() {
+        // Buscar fechas visibles en los headers del calendario
+        var headers = document.querySelectorAll('[class*="header"] [class*="date"], [class*="day"] span, thead th, [class*="calendar"] [class*="day"]');
+        var textos = [];
+        headers.forEach(function(h) { textos.push(h.innerText); });
+
+        // Tambien buscar el boton de siguiente semana
+        var btnSiguiente = document.querySelector('button[class*="next"], button[aria-label*="siguiente"], button[aria-label*="next"], [class*="next-week"]');
+
+        return {
+          headers: textos.slice(0, 10),
+          tieneBtnSiguiente: !!btnSiguiente,
+        };
+      });
+
+      console.log('Semana ' + (semanasNavigadas + 1) + ' - headers: ' + JSON.stringify(semanaInfo.headers.slice(0, 5)));
+
+      // Leer disponibilidad del DOM actual
+      const dispSemana = await leerDisponibilidadDOM(page);
+      console.log('Instancias en DOM esta semana: ' + Object.keys(dispSemana).length);
+
+      // Registrar todas las instancias encontradas
+      for (const key of Object.keys(dispSemana)) {
+        disponibilidad[key] = dispSemana[key];
+        // Extraer fecha del instanciaID (formato: i2026-03-30>claseID>horarioID)
+        const match = key.match(/i(\d{4}-\d{2}-\d{2})/);
+        if (match) {
+          console.log('Encontrado: ' + key.slice(0, 40) + ' | lleno: ' + dispSemana[key].capacidadCompleta + ' | part: ' + dispSemana[key].participantes);
+        }
       }
-    }
 
-    // Por cada fecha, navegar a horarios y capturar porIDs
-    const disponibilidadPorFecha = {};
-
-    for (const fecha of fechasUnicas) {
-      console.log('Navegando horarios para: ' + fecha);
-      const cuposCapturados = {};
-
-      const listener = async function(response) {
-        try {
-          const url = response.url();
-          if (url.includes('porIDs')) {
-            const ct = response.headers()['content-type'] || '';
-            if (ct.includes('application/json')) {
-              const json = await response.json();
-              console.log('porIDs capturado (' + fecha + '): ' + JSON.stringify(json).slice(0, 300));
-              if (json && typeof json === 'object') {
-                for (const key of Object.keys(json)) {
-                  cuposCapturados[key] = json[key];
-                }
-              }
-            }
+      // Verificar si ya tenemos todas las fechas pendientes
+      let todasEncontradas = true;
+      for (const item of fechasPendientesPorSlot) {
+        for (const fecha of item.fechas) {
+          const instanciaID = 'i' + fecha + '>' + item.slot.horarioID;
+          // Buscar con cualquier claseID
+          const encontrado = Object.keys(disponibilidad).some(function(k) {
+            return k.includes('i' + fecha) && k.includes(item.slot.horarioID);
+          });
+          if (!encontrado) {
+            todasEncontradas = false;
           }
-        } catch (e) {}
-      };
-
-      page.on('response', listener);
-      await page.goto(CONFIG.horariosUrl, { waitUntil: 'networkidle' });
-      await page.waitForTimeout(3000);
-
-      // Hacer clic en el dia correcto del calendario
-      // BoxMagic muestra la semana actual — navegar hasta la fecha correcta
-      // La fecha target en formato que BoxMagic entiende
-      const fechaTarget = new Date(fecha + 'T12:00:00');
-      const diaSemana = fechaTarget.getDay(); // 0=dom, 1=lun...
-      const diaNumero = fechaTarget.getDate();
-
-      // Buscar el boton del dia en el calendario por el numero
-      const selector = 'button:has-text("' + diaNumero + '"), [data-date="' + fecha + '"], text=' + diaNumero;
-      try {
-        // Intentar hacer clic en la fecha del calendario
-        await page.click('text=' + diaNumero, { timeout: 3000 });
-        await page.waitForTimeout(4000);
-      } catch (e) {
-        // Si no funciona el clic, esperar igualmente
-        console.log('No se pudo hacer clic en dia ' + diaNumero + ', esperando respuesta...');
-        await page.waitForTimeout(4000);
+        }
       }
 
-      page.off('response', listener);
-      disponibilidadPorFecha[fecha] = cuposCapturados;
-      console.log('Instancias capturadas para ' + fecha + ': ' + Object.keys(cuposCapturados).length);
+      if (todasEncontradas && semanasNavigadas > 0) {
+        console.log('Todas las fechas encontradas en el DOM.');
+        break;
+      }
+
+      // Navegar a la siguiente semana
+      const avanzado = await page.evaluate(function() {
+        // Buscar boton de siguiente semana/dia con varios selectores posibles
+        var selectores = [
+          'button[class*="next"]',
+          'button[aria-label*="siguiente"]',
+          'button[aria-label*="next"]',
+          'button[aria-label*="Siguiente"]',
+          '[class*="next-week"]',
+          '[class*="nextWeek"]',
+          'button:has-text(">")',
+          'button:has-text("Siguiente")',
+        ];
+
+        for (var i = 0; i < selectores.length; i++) {
+          var btn = document.querySelector(selectores[i]);
+          if (btn) {
+            btn.click();
+            return true;
+          }
+        }
+
+        // Buscar el ultimo boton de la barra de navegacion del calendario
+        var botones = document.querySelectorAll('button');
+        var btnNav = null;
+        botones.forEach(function(b) {
+          var txt = b.innerText || b.textContent || '';
+          var cls = b.className || '';
+          if (txt.includes('>') || txt.includes('›') || txt.includes('→') || cls.includes('next') || cls.includes('Next')) {
+            btnNav = b;
+          }
+        });
+        if (btnNav) {
+          btnNav.click();
+          return true;
+        }
+
+        return false;
+      });
+
+      if (!avanzado) {
+        console.log('No se pudo avanzar a la siguiente semana en iteracion ' + (semanasNavigadas + 1));
+        // Log del HTML para debug
+        const html = await page.evaluate(function() {
+          var botones = document.querySelectorAll('button');
+          var info = [];
+          botones.forEach(function(b) {
+            info.push(b.className + ' | ' + (b.innerText || '').slice(0, 20));
+          });
+          return info.slice(0, 10).join(' || ');
+        });
+        console.log('Botones disponibles: ' + html);
+        break;
+      }
+
+      await page.waitForTimeout(4000);
+      semanasNavigadas++;
     }
+
+    console.log('Total instancias en DOM: ' + Object.keys(disponibilidad).length);
 
     // Analizar disponibilidad
     const pendientes = [];
@@ -230,28 +391,22 @@ async function main() {
     for (const item of fechasPendientesPorSlot) {
       const slot = item.slot;
       for (const fecha of item.fechas) {
-        const cupos = disponibilidadPorFecha[fecha] || {};
-        const instanciaID = 'i' + fecha + '>' + slot.claseID + '>' + slot.horarioID;
-
-        let instancia = cupos[instanciaID];
-
-        if (!instancia) {
-          for (const key of Object.keys(cupos)) {
-            if (key.includes(slot.horarioID)) {
-              instancia = cupos[key];
-              console.log('Instancia encontrada con key: ' + key);
-              break;
-            }
+        // Buscar instancia por fecha y horarioID
+        let instancia = null;
+        for (const key of Object.keys(disponibilidad)) {
+          if (key.includes('i' + fecha) && key.includes(slot.horarioID)) {
+            instancia = disponibilidad[key];
+            break;
           }
         }
 
         if (!instancia) {
-          console.log('Sin datos: ' + slot.nombre + ' ' + fecha);
+          console.log('Sin datos DOM: ' + slot.nombre + ' ' + fecha);
           continue;
         }
 
-        const cuposMax = instancia.cupos || instancia.cuposMax || 6;
-        const participantes = instancia.participantes || instancia.inscritos || 0;
+        const cuposMax = instancia.cuposMax || 6;
+        const participantes = instancia.participantes || 0;
         const cuposLibres = cuposMax - participantes;
         const capacidadCompleta = instancia.capacidadCompleta || cuposLibres <= 0;
 
