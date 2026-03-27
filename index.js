@@ -62,9 +62,7 @@ function obtenerProximasFechas(slot, finVigencia) {
     if (d.getDay() === slot.dia) {
       const parts = slot.hora.split(':');
       const fechaClase = new Date(d.getFullYear(), d.getMonth(), d.getDate(), parseInt(parts[0]), parseInt(parts[1]));
-      if (fechaClase > ahora) {
-        fechas.push(d.toISOString().slice(0, 10));
-      }
+      if (fechaClase > ahora) fechas.push(d.toISOString().slice(0, 10));
     }
     d.setDate(d.getDate() + 1);
   }
@@ -143,14 +141,13 @@ async function avanzarSemana(page) {
       var btn = document.querySelector(selectores[i]);
       if (btn) { btn.click(); return 'selector:' + selectores[i]; }
     }
-    // Buscar por texto y simbolos en botones
     var botones = document.querySelectorAll('button');
     var encontrado = null;
     botones.forEach(function(b) {
       if (encontrado) return;
       var txt = (b.innerText || b.textContent || '').trim();
       var cls = b.className || '';
-      if (txt === '>' || txt === '›' || txt === '→' || txt === '>>' ||
+      if (txt === '>' || txt === '\u203a' || txt === '\u2192' || txt === '>>' ||
           cls.includes('next') || cls.includes('Next') ||
           cls.includes('forward') || cls.includes('right')) {
         encontrado = b;
@@ -166,7 +163,8 @@ async function main() {
   limpiarAvisosViejos();
 
   const browser = await chromium.launch({ args: ['--no-sandbox'] });
-  const context = await browser.newContext({ serviceWorkers: 'block' });
+  // Sin bloquear service worker para que la app cargue correctamente
+  const context = await browser.newContext();
   const page = await context.newPage();
 
   let perfilData = null;
@@ -215,9 +213,7 @@ async function main() {
         if (yaAvisado(key)) { console.log('Ya avisado: ' + slot.nombre + ' ' + fecha); return false; }
         return true;
       });
-      if (sinAgendar.length > 0) {
-        fechasPendientesPorSlot.push({ slot: slot, fechas: sinAgendar });
-      }
+      if (sinAgendar.length > 0) fechasPendientesPorSlot.push({ slot: slot, fechas: sinAgendar });
     }
 
     if (fechasPendientesPorSlot.length === 0) {
@@ -225,9 +221,23 @@ async function main() {
       return;
     }
 
-    // Ir a horarios y navegar semana por semana
+    // Ir a horarios
     await page.goto(CONFIG.horariosUrl, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(6000);
+
+    // Debug: ver que hay en el DOM
+    const debugInfo = await page.evaluate(function() {
+      return {
+        title: document.title,
+        links: document.querySelectorAll('a[href*="instanciaID"]').length,
+        botones: document.querySelectorAll('button').length,
+        htmlSnippet: document.body.innerHTML.slice(0, 800),
+      };
+    });
+    console.log('DOM debug - title: ' + debugInfo.title);
+    console.log('DOM debug - links instanciaID: ' + debugInfo.links);
+    console.log('DOM debug - botones: ' + debugInfo.botones);
+    console.log('DOM debug - html: ' + debugInfo.htmlSnippet.replace(/\n/g, ' ').slice(0, 400));
 
     const disponibilidad = {};
     const maxSemanas = 8;
@@ -239,25 +249,19 @@ async function main() {
 
       for (const key of Object.keys(dispSemana)) {
         disponibilidad[key] = dispSemana[key];
-        const match = key.match(/i(\d{4}-\d{2}-\d{2})/);
-        if (match) {
-          console.log('  ' + key.slice(0, 50) + ' | lleno:' + dispSemana[key].capacidadCompleta + ' part:' + dispSemana[key].participantes + '/' + dispSemana[key].cuposMax);
-        }
+        console.log('  ' + key.slice(0, 50) + ' | lleno:' + dispSemana[key].capacidadCompleta + ' part:' + dispSemana[key].participantes + '/' + dispSemana[key].cuposMax);
       }
 
-      // Verificar si ya tenemos todas las fechas que necesitamos
       const fechaMaxPendiente = fechasPendientesPorSlot
         .flatMap(function(i) { return i.fechas; })
-        .sort()
-        .pop();
+        .sort().pop();
 
       const fechasEnDOM = Object.keys(disponibilidad)
         .map(function(k) { const m = k.match(/i(\d{4}-\d{2}-\d{2})/); return m ? m[1] : null; })
-        .filter(Boolean)
-        .sort();
-
+        .filter(Boolean).sort();
       const fechaMaxDOM = fechasEnDOM[fechasEnDOM.length - 1] || '';
-      console.log('Fecha max pendiente: ' + fechaMaxPendiente + ' | max en DOM: ' + fechaMaxDOM);
+
+      console.log('Max pendiente: ' + fechaMaxPendiente + ' | max DOM: ' + fechaMaxDOM);
 
       if (fechaMaxDOM >= fechaMaxPendiente && semana > 0) {
         console.log('Todas las fechas cubiertas.');
@@ -266,25 +270,23 @@ async function main() {
 
       const resultado = await avanzarSemana(page);
       if (!resultado) {
-        console.log('No se encontro boton de siguiente semana. HTML botones:');
         const btnInfo = await page.evaluate(function() {
           var bs = document.querySelectorAll('button');
           var info = [];
           bs.forEach(function(b) {
             info.push((b.className || '').slice(0, 40) + '|' + (b.innerText || '').slice(0, 15));
           });
-          return info.slice(0, 15).join(' || ');
+          return info.slice(0, 20).join(' || ');
         });
-        console.log(btnInfo);
+        console.log('Sin boton siguiente. Botones: ' + btnInfo);
         break;
       }
-      console.log('Avanzando semana: ' + resultado);
-      await page.waitForTimeout(4000);
+      console.log('Avanzando: ' + resultado);
+      await page.waitForTimeout(5000);
     }
 
-    console.log('Total instancias encontradas: ' + Object.keys(disponibilidad).length);
+    console.log('Total instancias: ' + Object.keys(disponibilidad).length);
 
-    // Analizar disponibilidad
     const pendientes = [];
     for (const item of fechasPendientesPorSlot) {
       const slot = item.slot;
@@ -296,26 +298,19 @@ async function main() {
             break;
           }
         }
-        if (!instancia) {
-          console.log('Sin datos DOM: ' + slot.nombre + ' ' + fecha);
-          continue;
-        }
+        if (!instancia) { console.log('Sin datos: ' + slot.nombre + ' ' + fecha); continue; }
         const cuposMax = instancia.cuposMax || 6;
         const participantes = instancia.participantes || 0;
         const cuposLibres = cuposMax - participantes;
         const capacidadCompleta = instancia.capacidadCompleta || cuposLibres <= 0;
         console.log(slot.nombre + ' ' + fecha + ': ' + participantes + '/' + cuposMax + ' -> ' + (capacidadCompleta ? 'LLENO' : cuposLibres + ' libre(s)'));
         if (!capacidadCompleta && cuposLibres > 0) {
-          const key = fecha + '_' + slot.horarioID;
-          pendientes.push({ slot: slot, fecha: fecha, key: key, cuposLibres: cuposLibres });
+          pendientes.push({ slot: slot, fecha: fecha, key: fecha + '_' + slot.horarioID, cuposLibres: cuposLibres });
         }
       }
     }
 
-    if (pendientes.length === 0) {
-      console.log('Sin clases disponibles con cupo.');
-      return;
-    }
+    if (pendientes.length === 0) { console.log('Sin clases con cupo.'); return; }
 
     const lineas = ['BoxMagic - Cupo disponible', '', 'Hay ' + pendientes.length + ' clase(s) con cupo que no has agendado:', ''];
     const porFecha = {};
@@ -326,14 +321,14 @@ async function main() {
     for (const fecha of Object.keys(porFecha).sort()) {
       const fechaLegible = new Date(fecha + 'T12:00:00').toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'long' });
       lineas.push(fechaLegible + ':');
-      for (const nombre of porFecha[fecha]) { lineas.push('  ' + nombre); }
+      for (const nombre of porFecha[fecha]) lineas.push('  ' + nombre);
       lineas.push('');
     }
     lineas.push('Agenda en: members.boxmagic.app');
 
     try {
       await enviarWhatsApp(lineas.join('\n'));
-      for (const item of pendientes) { marcarAvisado(item.key); }
+      for (const item of pendientes) marcarAvisado(item.key);
     } catch (err) {
       console.log('Error WhatsApp: ' + err.message);
     }
