@@ -59,20 +59,16 @@ async function login(page) {
 async function getPerfil(page) {
   return new Promise(async (resolve) => {
     let perfil = null;
-
     const handler = async (response) => {
       if (response.url().includes('boxmagic') || response.url().includes('parse')) {
         try {
-          const contentType = response.headers()['content-type'] || '';
-          if (!contentType.includes('application/json')) return;
+          const ct = response.headers()['content-type'] || '';
+          if (!ct.includes('application/json')) return;
           const data = await response.json();
-          if (data.perfilEnGimnasio?.membresias) {
-            perfil = data.perfilEnGimnasio;
-          }
+          if (data.perfilEnGimnasio?.membresias) perfil = data.perfilEnGimnasio;
         } catch(e) {}
       }
     };
-
     page.on('response', handler);
     await page.goto(CONFIG.perfilUrl, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(3000);
@@ -93,21 +89,17 @@ async function checkCupos() {
   try {
     const page = await browser.newPage();
     await login(page);
-
     const perfil = await getPerfil(page);
-    await browser.close();
 
     if (!perfil) {
       console.log('⚠️ No se pudo obtener el perfil — esperando próxima revisión');
       return;
     }
 
-    // ── 1. Encontrar membresía activa ──────────────────────────────────────
-    const membresias = perfil.membresias || {};
+    // ── 1. Membresía activa ───────────────────────────────────────────────
     let planActivo = null;
-
-    for (const key in membresias) {
-      const m = membresias[key];
+    for (const key in perfil.membresias) {
+      const m = perfil.membresias[key];
       if (!m.activa) continue;
       const finVigencia = new Date(m.finVigencia);
       if (finVigencia < hoy) continue;
@@ -120,9 +112,8 @@ async function checkCupos() {
       return;
     }
 
-    // ── 2. Calcular cupos disponibles desde reservasNoAsignadas ───────────
-    const reservasNoAsignadas = Object.values(perfil.reservasNoAsignadas || {});
-    const cuposDisponibles = reservasNoAsignadas.length;
+    // ── 2. Cupos disponibles ──────────────────────────────────────────────
+    const cuposDisponibles = Object.keys(perfil.reservasNoAsignadas || {}).length;
 
     console.log(`📋 Plan: ${planActivo.planNombre}`);
     console.log(`📅 Vigente hasta: ${planActivo.finVigencia.toLocaleDateString('es-CL')}`);
@@ -133,157 +124,83 @@ async function checkCupos() {
       return;
     }
 
-    // ── 3. Fechas ya reservadas (para no notificar lo que ya está agendado) ─
-    const reservas = Object.values(perfil.reservas || {});
+    // ── 3. Fechas ya reservadas ───────────────────────────────────────────
     const fechasReservadas = new Set(
-      reservas
+      Object.values(perfil.reservas || {})
         .filter(r => r.membresiaID === planActivo.membresiaID)
         .map(r => {
-          const fechaInicio = new Date(r.fechaInicio);
-          const utc = fechaInicio.getTime() + fechaInicio.getTimezoneOffset() * 60000;
-          const fechaChile = new Date(utc + (-3 * 60) * 60000);
-          return `${r.fechaYMD}-${fechaChile.getHours()}`;
+          const fi = new Date(r.fechaInicio);
+          const utc = fi.getTime() + fi.getTimezoneOffset() * 60000;
+          const fc = new Date(utc + (-3 * 60) * 60000);
+          return `${r.fechaYMD}-${fc.getHours()}`;
         })
     );
 
-    // ── 4. Slots pendientes en el período de vigencia ─────────────────────
+    // ── 4. Slots pendientes sin reservar ─────────────────────────────────
     const todasLasFechas = getFechasEnPeriodo(hoy, planActivo.finVigencia);
-    const fechasPendientes = todasLasFechas.filter(f => !fechasReservadas.has(f.slotKey));
+    const slotsPendientes = todasLasFechas.filter(f => !fechasReservadas.has(f.slotKey));
 
-    console.log(`📅 ${fechasPendientes.length} slot(s) pendientes hasta ${planActivo.finVigencia.toLocaleDateString('es-CL')}`);
+    console.log(`📅 ${slotsPendientes.length} slot(s) pendientes`);
 
-    // ── 5. Para cada slot pendiente, navegar y capturar espaciosDisponibles ─
-    // BoxMagic devuelve perfilEnGimnasio en cada navegación, pero la
-    // disponibilidad de espacios está en la respuesta porIDs / instancias
-    // que se dispara al cargar la vista de horarios con instanciaID.
-    // Capturamos TODAS las respuestas JSON y buscamos espaciosDisponibles.
-
-    const browser2 = await chromium.launch({
-      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '/ms-playwright/chromium-1091/chrome-linux/chrome',
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu']
-    });
-
-    const page2 = await browser2.newPage();
-    await login(page2);
-
-    const resultados = [];
-
-    for (const slot of fechasPendientes) {
-      const { diaNombre, fechaYMD, hora, claseID, horarioID } = slot;
-      const respuestas = [];
-
-      const handler = async (response) => {
-        try {
-          const ct = response.headers()['content-type'] || '';
-          if (!ct.includes('application/json')) return;
-          const data = await response.json();
-          respuestas.push({ url: response.url(), data });
-        } catch(e) {}
-      };
-
-      page2.on('response', handler);
-      const url = `${CONFIG.boxmagicUrl}?instanciaID=i${fechaYMD}>${claseID}>${horarioID}`;
-      await page2.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
-      await page2.waitForTimeout(2000);
-      page2.off('response', handler);
-
-      // Buscar espaciosDisponibles en cualquier respuesta
-      let espacios = null;
-      let yaReservado = false;
-
-      for (const { data } of respuestas) {
-        // Buscar en instancias directas
-        if (data.instancias) {
-          for (const key in data.instancias) {
-            const inst = data.instancias[key];
-            const fi = new Date(inst.fechaInicio);
-            const utc = fi.getTime() + fi.getTimezoneOffset() * 60000;
-            const fc = new Date(utc + (-3 * 60) * 60000);
-            if (fc.getHours() !== hora || fc.toISOString().split('T')[0] !== fechaYMD) continue;
-            if (data.participantes?.[CONFIG.usuarioID]) { yaReservado = true; break; }
-            espacios = inst.espaciosDisponibles;
-            break;
-          }
-        }
-
-        // Buscar en reservas del perfil fresco: si hay una reserva con este instanciaID → ya está reservado
-        if (data.perfilEnGimnasio?.reservas) {
-          const instanciaKey = `i${fechaYMD}>${claseID}>${horarioID}`;
-          const reservaExistente = Object.values(data.perfilEnGimnasio.reservas).find(r =>
-            r.instanciaID === instanciaKey || r.claseID === claseID && r.fechaYMD === fechaYMD
-          );
-          if (reservaExistente) {
-            yaReservado = true;
-          }
-        }
-
-        if (espacios !== null || yaReservado) break;
-      }
-
-      if (yaReservado) {
-        console.log(`⏭️  ${diaNombre} ${fechaYMD} ${hora}:00hrs → Ya reservado`);
-        continue;
-      }
-
-      if (espacios === null) {
-        // Último recurso: asumir que hay espacio si no encontramos datos
-        // (la clase existe en el sistema porque tenemos su ID)
-        console.log(`❓ ${diaNombre} ${fechaYMD} ${hora}:00hrs → Sin datos de espacios`);
-        continue;
-      }
-
-      console.log(`🔍 ${diaNombre} ${fechaYMD} ${hora}:00hrs → ${espacios} espacio(s)`);
-
-      if (espacios > 0) {
-        resultados.push({ ...slot, espacios });
-      }
-
-      await new Promise(r => setTimeout(r, 500));
+    if (slotsPendientes.length === 0) {
+      console.log('🎉 ¡Todos los slots están cubiertos!');
+      return;
     }
 
-    await browser2.close();
+    // ── 5. Notificar los slots pendientes (hay cupos disponibles) ─────────
+    // La lógica es simple: si hay cuposDisponibles > 0 y el slot no está
+    // reservado → hay oportunidad de reservar → notificar.
+    console.log(`\n🚨 Hay ${cuposDisponibles} cupo(s) sin agendar y ${slotsPendientes.length} slot(s) disponibles:`);
 
-    if (resultados.length > 0) {
-      for (const r of resultados) {
-        await sendNotification(r.diaNombre, r.fechaYMD, r.hora, r.espacios, cuposDisponibles);
-      }
-    } else {
-      console.log('Sin cupos disponibles en los slots monitoreados.');
+    for (const slot of slotsPendientes) {
+      console.log(`   → ${slot.diaNombre} ${slot.fechaYMD} ${slot.hora}:00hrs`);
     }
 
-  } catch(e) {
-    console.error('Error en checkCupos:', e);
+    // Notificar una vez con el resumen completo
+    await sendNotification(slotsPendientes, cuposDisponibles);
+
+  } finally {
+    await browser.close();
   }
 }
 
-async function sendNotification(dia, fechaYMD, hora, cupos, cuposRestantesPlan) {
+async function sendNotification(slots, cuposDisponibles) {
+  // Construir lista de slots para el mensaje
+  const listaSlots = slots.slice(0, 10).map(s =>
+    `${s.diaNombre} ${s.fechaYMD} ${s.hora}:00-${s.hora+1}:00hrs`
+  ).join('\n');
+
+  const listaHTML = slots.slice(0, 10).map(s =>
+    `<li>${s.diaNombre} ${s.fechaYMD} — ${s.hora}:00-${s.hora+1}:00hrs</li>`
+  ).join('');
+
   const transporter = nodemailer.createTransporter({
     service: 'gmail',
-    auth: {
-      user: process.env.GMAIL_USER,
-      pass: process.env.GMAIL_PASS
-    }
+    auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_PASS }
   });
 
   await transporter.sendMail({
     from: process.env.GMAIL_USER,
     to: CONFIG.email,
-    subject: `🥊 ¡Cupo disponible ${dia} ${fechaYMD} ${hora}:00hrs!`,
-    html: `<h2>¡Hay ${cupos} cupo(s) disponible(s)!</h2>
-           <p>${dia} ${fechaYMD} — ${hora}:00-${hora+1}:00hrs</p>
-           <p>Te quedan <b>${cuposRestantesPlan}</b> cupo(s) en tu plan.</p>
-           <a href="${CONFIG.boxmagicUrl}">Reservar ahora →</a>`
+    subject: `🥊 ${cuposDisponibles} cupo(s) sin agendar — ¡reserva ahora!`,
+    html: `
+      <h2>🥊 Tienes ${cuposDisponibles} cupo(s) sin agendar</h2>
+      <p>Slots disponibles en tu plan:</p>
+      <ul>${listaHTML}</ul>
+      <a href="${CONFIG.boxmagicUrl}" style="background:#7c3aed;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;">
+        Reservar ahora →
+      </a>
+    `
   });
-  console.log(`📧 Email enviado: ${dia} ${fechaYMD} ${hora}:00hrs`);
+  console.log(`📧 Email enviado con ${slots.length} slot(s)`);
 
   const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
   await client.messages.create({
     from: 'whatsapp:+14155238886',
     to: process.env.TWILIO_WHATSAPP_TO,
-    body: `🥊 ¡Cupo disponible!\n${dia} ${fechaYMD}\n${hora}:00-${hora+1}:00hrs\n${cupos} espacio(s)\nTe quedan ${cuposRestantesPlan} cupos en tu plan\nReserva: ${CONFIG.boxmagicUrl}`
+    body: `🥊 Tienes ${cuposDisponibles} cupo(s) sin agendar!\n\nSlots disponibles:\n${listaSlots}\n\nReserva: ${CONFIG.boxmagicUrl}`
   });
-  console.log(`💬 WhatsApp enviado: ${dia} ${fechaYMD} ${hora}:00hrs`);
+  console.log(`💬 WhatsApp enviado`);
 }
 
 async function loop() {
