@@ -93,10 +93,12 @@ async function main() {
   limpiarAvisosViejos();
 
   const browser = await chromium.launch({ args: ['--no-sandbox'] });
-
-  // Bloquear Service Worker para que porIDs no se sirva desde cache
   const context = await browser.newContext({ serviceWorkers: 'block' });
   const page = await context.newPage();
+
+  // Deshabilitar cache igual que "Disable cache" en DevTools
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
 
   let perfilData = null;
 
@@ -183,7 +185,7 @@ async function main() {
             const ct = response.headers()['content-type'] || '';
             if (ct.includes('application/json')) {
               const json = await response.json();
-              console.log('porIDs capturado (' + fecha + '): ' + JSON.stringify(json).slice(0, 200));
+              console.log('porIDs capturado (' + fecha + '): ' + JSON.stringify(json).slice(0, 300));
               if (json && typeof json === 'object') {
                 for (const key of Object.keys(json)) {
                   cuposCapturados[key] = json[key];
@@ -195,10 +197,29 @@ async function main() {
       };
 
       page.on('response', listener);
-      await page.goto(CONFIG.horariosUrl + '?fecha=' + fecha, { waitUntil: 'networkidle' });
-      await page.waitForTimeout(6000);
-      page.off('response', listener);
+      await page.goto(CONFIG.horariosUrl, { waitUntil: 'networkidle' });
+      await page.waitForTimeout(3000);
 
+      // Hacer clic en el dia correcto del calendario
+      // BoxMagic muestra la semana actual — navegar hasta la fecha correcta
+      // La fecha target en formato que BoxMagic entiende
+      const fechaTarget = new Date(fecha + 'T12:00:00');
+      const diaSemana = fechaTarget.getDay(); // 0=dom, 1=lun...
+      const diaNumero = fechaTarget.getDate();
+
+      // Buscar el boton del dia en el calendario por el numero
+      const selector = 'button:has-text("' + diaNumero + '"), [data-date="' + fecha + '"], text=' + diaNumero;
+      try {
+        // Intentar hacer clic en la fecha del calendario
+        await page.click('text=' + diaNumero, { timeout: 3000 });
+        await page.waitForTimeout(4000);
+      } catch (e) {
+        // Si no funciona el clic, esperar igualmente
+        console.log('No se pudo hacer clic en dia ' + diaNumero + ', esperando respuesta...');
+        await page.waitForTimeout(4000);
+      }
+
+      page.off('response', listener);
       disponibilidadPorFecha[fecha] = cuposCapturados;
       console.log('Instancias capturadas para ' + fecha + ': ' + Object.keys(cuposCapturados).length);
     }
