@@ -8,6 +8,7 @@ const CONFIG = {
   usuarioID: 'ep4Q9nWV4a',
   loginUrl: 'https://members.boxmagic.app/a/g?o=pi-e',
   boxmagicUrl: 'https://members.boxmagic.app/g/oGDPQaGLb5/horarios',
+  perfilUrl: 'https://members.boxmagic.app/g/oGDPQaGLb5/perfil',
   slots: [
     { dia: 1, diaNombre: 'Lunes',     hora: 19, claseID: 'Vd0jxy2Lrx', horarioID: 'Kp0Myj6E08' },
     { dia: 1, diaNombre: 'Lunes',     hora: 20, claseID: 'gjLKb2rDRe', horarioID: '6XD9krv342' },
@@ -19,7 +20,6 @@ const CONFIG = {
 };
 
 const INTERVALO_MINUTOS = 15;
-const slotsReservados = new Set();
 
 function getFechaChile() {
   const ahora = new Date();
@@ -27,20 +27,18 @@ function getFechaChile() {
   return new Date(utc + (-3 * 60) * 60000);
 }
 
-function getFechasDelMes() {
-  const hoy = getFechaChile();
+function getFechasEnPeriodo(inicio, fin) {
   const fechas = [];
-  const finMes = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
-  const cursor = new Date(hoy);
+  const cursor = new Date(inicio);
   cursor.setHours(0, 0, 0, 0);
+  const finDate = new Date(fin);
 
-  while (cursor <= finMes) {
+  while (cursor <= finDate) {
     const diaNum = cursor.getDay();
     const fechaYMD = cursor.toISOString().split('T')[0];
     for (const slot of CONFIG.slots) {
       if (slot.dia === diaNum) {
-        const slotKey = `${fechaYMD}-${slot.hora}`;
-        fechas.push({ ...slot, fechaYMD, slotKey });
+        fechas.push({ ...slot, fechaYMD, slotKey: `${fechaYMD}-${slot.hora}` });
       }
     }
     cursor.setDate(cursor.getDate() + 1);
@@ -59,6 +57,73 @@ async function login(page) {
   console.log('✅ Login exitoso');
 }
 
+async function getPlanActivo(page) {
+  return new Promise(async (resolve) => {
+    let planData = null;
+
+    const handler = async (response) => {
+      if (response.url().includes('perfilEnGimnasio')) {
+        try {
+          const data = await response.json();
+          if (data.perfilEnGimnasio?.membresias) {
+            const membresias = data.perfilEnGimnasio.membresias;
+            const reservas = data.perfilEnGimnasio.reservas || {};
+
+            // Buscar membresía activa con plan de sesiones
+            for (const key in membresias) {
+              const m = membresias[key];
+              if (!m.activa) continue;
+              if (!m.planNombre?.includes('Sesiones')) continue;
+
+              // Fecha vigencia
+              const finVigencia = new Date(m.finVigencia);
+              const hoy = getFechaChile();
+              if (finVigencia < hoy) continue;
+
+              // Contar reservas activas de esta membresía en período actual
+              const reservasDelPlan = Object.values(reservas).filter(r =>
+                r.membresiaID === m.membresiaID &&
+                r.fechaYMD >= hoy.toISOString().split('T')[0].substring(0, 7) // mismo mes
+              );
+
+              // Obtener fechas ya reservadas
+              const fechasReservadas = new Set(
+                reservasDelPlan.map(r => `${r.fechaYMD}-${new Date(r.fechaInicio).getHours()}`)
+              );
+
+              // Cupos disponibles = total plan - agendados
+              const totalCupos = parseInt(m.planNombre) || 16;
+              const cuposUsados = reservasDelPlan.length;
+              const cuposDisponibles = totalCupos - cuposUsados;
+
+              planData = {
+                membresiaID: m.membresiaID,
+                planNombre: m.planNombre,
+                finVigencia: m.finVigencia,
+                cuposDisponibles,
+                cuposUsados,
+                totalCupos,
+                fechasReservadas
+              };
+
+              console.log(`📋 Plan: ${m.planNombre}`);
+              console.log(`📅 Vigente hasta: ${new Date(m.finVigencia).toLocaleDateString('es-CL')}`);
+              console.log(`🎯 Cupos: ${cuposUsados}/${totalCupos} usados, ${cuposDisponibles} disponibles`);
+              break;
+            }
+          }
+        } catch(e) {}
+      }
+    };
+
+    page.on('response', handler);
+    await page.goto(CONFIG.perfilUrl, { waitUntil: 'networkidle', timeout: 60000 });
+    await page.waitForTimeout(3000);
+    page.off('response', handler);
+    resolve(planData);
+  });
+}
+
 async function checkSlot(page, { diaNombre, fechaYMD, hora, claseID, horarioID }) {
   return new Promise(async (resolve) => {
     let resultado = null;
@@ -75,7 +140,9 @@ async function checkSlot(page, { diaNombre, fechaYMD, hora, claseID, horarioID }
               const utc = fechaInicio.getTime() + fechaInicio.getTimezoneOffset() * 60000;
               const fechaChile = new Date(utc + (-3 * 60) * 60000);
               const horaClase = fechaChile.getHours();
-              if (horaClase !== hora) continue;
+              const fechaClase = fechaChile.toISOString().split('T')[0];
+
+              if (horaClase !== hora || fechaClase !== fechaYMD) continue;
 
               const yaReservado = data.participantes && data.participantes[CONFIG.usuarioID];
               if (yaReservado) {
@@ -94,7 +161,7 @@ async function checkSlot(page, { diaNombre, fechaYMD, hora, claseID, horarioID }
     };
 
     page.on('response', handler);
-    const url = `${CONFIG.boxmagicUrl}?instanciaID=i${fechaYMD}%3E${claseID}%3E${horarioID}`;
+    const url = `${CONFIG.boxmagicUrl}?instanciaID=i${fechaYMD}>${claseID}>${horarioID}`;
     await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(3000);
     page.off('response', handler);
@@ -104,16 +171,6 @@ async function checkSlot(page, { diaNombre, fechaYMD, hora, claseID, horarioID }
 
 async function checkCupos() {
   const hoy = getFechaChile();
-  const todasLasFechas = getFechasDelMes();
-  const fechasPendientes = todasLasFechas.filter(f => !slotsReservados.has(f.slotKey));
-
-  if (fechasPendientes.length === 0) {
-    console.log('🎉 ¡Todos los slots del mes están reservados!');
-    return;
-  }
-
-  console.log(`Hoy es ${hoy.toLocaleDateString('es-CL', {weekday:'long', day:'numeric', month:'long'})}`);
-  console.log(`📅 Monitoreando ${fechasPendientes.length} slot(s) pendientes este mes`);
 
   const browser = await chromium.launch({
     executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '/ms-playwright/chromium-1091/chrome-linux/chrome',
@@ -125,6 +182,29 @@ async function checkCupos() {
     const page = await browser.newPage();
     await login(page);
 
+    // Obtener plan activo
+    const plan = await getPlanActivo(page);
+
+    if (!plan) {
+      console.log('⚠️ No hay plan activo — esperando próxima revisión');
+      return;
+    }
+
+    if (plan.cuposDisponibles <= 0) {
+      console.log('🎉 ¡Plan completo! Todos los cupos están agendados.');
+      return;
+    }
+
+    // Generar slots del período del plan
+    const todasLasFechas = getFechasEnPeriodo(hoy, new Date(plan.finVigencia));
+
+    // Filtrar slots ya reservados
+    const fechasPendientes = todasLasFechas.filter(f =>
+      !plan.fechasReservadas.has(f.slotKey)
+    );
+
+    console.log(`📅 ${fechasPendientes.length} slot(s) pendientes hasta ${new Date(plan.finVigencia).toLocaleDateString('es-CL')}`);
+
     const resultados = [];
 
     for (const slot of fechasPendientes) {
@@ -135,10 +215,7 @@ async function checkCupos() {
         continue;
       }
 
-      if (resultado.reservado) {
-        slotsReservados.add(slot.slotKey);
-        continue;
-      }
+      if (resultado.reservado) continue;
 
       if (resultado.espacios > 0) {
         resultados.push({ ...slot, espacios: resultado.espacios });
@@ -149,7 +226,7 @@ async function checkCupos() {
 
     if (resultados.length > 0) {
       for (const r of resultados) {
-        await sendNotification(r.diaNombre, r.fechaYMD, r.hora, r.espacios);
+        await sendNotification(r.diaNombre, r.fechaYMD, r.hora, r.espacios, plan.cuposDisponibles);
       }
     } else {
       console.log('Sin cupos disponibles.');
@@ -160,7 +237,7 @@ async function checkCupos() {
   }
 }
 
-async function sendNotification(dia, fechaYMD, hora, cupos) {
+async function sendNotification(dia, fechaYMD, hora, cupos, cuposRestantesPlan) {
   const transporter = nodemailer.createTransporter({
     service: 'gmail',
     auth: {
@@ -175,6 +252,7 @@ async function sendNotification(dia, fechaYMD, hora, cupos) {
     subject: `🥊 ¡Cupo disponible ${dia} ${fechaYMD} ${hora}:00hrs!`,
     html: `<h2>¡Hay ${cupos} cupo(s) disponible(s)!</h2>
            <p>${dia} ${fechaYMD} — ${hora}:00-${hora+1}:00hrs</p>
+           <p>Te quedan <b>${cuposRestantesPlan}</b> cupo(s) en tu plan.</p>
            <a href="${CONFIG.boxmagicUrl}">Reservar ahora →</a>`
   });
   console.log(`📧 Email enviado: ${dia} ${fechaYMD} ${hora}:00hrs`);
@@ -183,7 +261,7 @@ async function sendNotification(dia, fechaYMD, hora, cupos) {
   await client.messages.create({
     from: 'whatsapp:+14155238886',
     to: process.env.TWILIO_WHATSAPP_TO,
-    body: `🥊 ¡Cupo disponible!\n${dia} ${fechaYMD}\n${hora}:00-${hora+1}:00hrs\n${cupos} espacio(s)\nReserva: ${CONFIG.boxmagicUrl}`
+    body: `🥊 ¡Cupo disponible!\n${dia} ${fechaYMD}\n${hora}:00-${hora+1}:00hrs\n${cupos} espacio(s)\nTe quedan ${cuposRestantesPlan} cupos en tu plan\nReserva: ${CONFIG.boxmagicUrl}`
   });
   console.log(`💬 WhatsApp enviado: ${dia} ${fechaYMD} ${hora}:00hrs`);
 }
