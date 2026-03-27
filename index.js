@@ -112,11 +112,12 @@ async function revisar() {
     // reservasNoAsignadas = cupos comprados que aún no tienen clase asignada.
     // Son los cupos que Nicolás puede usar para reservar.
     // Contamos TODAS porque son del plan activo (el gimnasio solo muestra las vigentes).
-    // Filtrar solo RNA del año en curso (las de 2024 son períodos vencidos)
-    const anoActual = ahoraChile().getFullYear();
-    const cuposSinAgendar = Object.values(perfil.reservasNoAsignadas || {})
-      .filter(r => new Date(r.creacion || r.actualizacion || 0).getFullYear() >= anoActual)
-      .length;
+    // Loguear TODAS las RNA para entender su estructura exacta
+    const todasRNA = Object.values(perfil.reservasNoAsignadas || {});
+    todasRNA.forEach((r, i) => {
+      console.log(`RNA[${i}]: creacion=${r.creacion} actualizacion=${r.actualizacion} membresiaID=${r.membresiaID} bmID=${r.bmID}`);
+    });
+    const cuposSinAgendar = todasRNA.length;
     console.log(`🎯 Cupos sin agendar: ${cuposSinAgendar}`);
 
     if (cuposSinAgendar === 0) {
