@@ -112,22 +112,19 @@ async function revisar() {
     // reservasNoAsignadas = cupos comprados que aún no tienen clase asignada.
     // Son los cupos que Nicolás puede usar para reservar.
     // Contamos TODAS porque son del plan activo (el gimnasio solo muestra las vigentes).
-    // Leer cupos directamente del HTML — es lo que muestra la app, sin inferencias
-    let cuposSinAgendar = 0;
-    try {
-      const textoHTML = await page.content();
-      const match = textoHTML.match(/(\d+)\s*Cupo[s]?\s*sin\s*agendar/i);
-      if (match) {
-        cuposSinAgendar = parseInt(match[1]);
-        console.log(`✅ Cupos leídos del HTML: ${cuposSinAgendar}`);
-      } else {
-        // Fallback: contar reservasNoAsignadas
-        cuposSinAgendar = Object.keys(perfil.reservasNoAsignadas || {}).length;
-        console.log(`⚠️  Fallback RNA: ${cuposSinAgendar}`);
-      }
-    } catch(e) {
-      cuposSinAgendar = Object.keys(perfil.reservasNoAsignadas || {}).length;
-    }
+    // Calcular cupos igual que la app: total - agendadas - usadas = sin agendar
+    const nombrePlan = plan.planNombre || '';
+    const matchTotal = nombrePlan.match(/(\d+)\s*Sesiones/i);
+    const totalPlan  = matchTotal ? parseInt(matchTotal[1]) : 16;
+
+    // Usar TODAS las reservas (no filtrar por membresiaID — ese campo no existe en reservas)
+    const todasReservas = Object.values(perfil.reservas || {});
+    const ahora     = ahoraChile();
+    const agendadas = todasReservas.filter(r => new Date(r.fechaInicio) >= ahora).length;
+    const usadas    = todasReservas.filter(r => new Date(r.fechaInicio) <  ahora).length;
+    const cuposSinAgendar = Math.max(0, totalPlan - agendadas - usadas);
+
+    console.log(`📊 Total:${totalPlan} Agendadas:${agendadas} Usadas:${usadas} → Sin agendar:${cuposSinAgendar}`);
     console.log(`🎯 Cupos sin agendar: ${cuposSinAgendar}`);
 
     if (cuposSinAgendar === 0) {
