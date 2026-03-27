@@ -112,12 +112,22 @@ async function revisar() {
     // reservasNoAsignadas = cupos comprados que aún no tienen clase asignada.
     // Son los cupos que Nicolás puede usar para reservar.
     // Contamos TODAS porque son del plan activo (el gimnasio solo muestra las vigentes).
-    // Loguear TODAS las RNA para entender su estructura exacta
-    const todasRNA = Object.values(perfil.reservasNoAsignadas || {});
-    todasRNA.forEach((r, i) => {
-      console.log(`RNA[${i}]: creacion=${r.creacion} actualizacion=${r.actualizacion} membresiaID=${r.membresiaID} bmID=${r.bmID}`);
-    });
-    const cuposSinAgendar = todasRNA.length;
+    // Leer cupos directamente del HTML — es lo que muestra la app, sin inferencias
+    let cuposSinAgendar = 0;
+    try {
+      const textoHTML = await page.content();
+      const match = textoHTML.match(/(\d+)\s*Cupo[s]?\s*sin\s*agendar/i);
+      if (match) {
+        cuposSinAgendar = parseInt(match[1]);
+        console.log(`✅ Cupos leídos del HTML: ${cuposSinAgendar}`);
+      } else {
+        // Fallback: contar reservasNoAsignadas
+        cuposSinAgendar = Object.keys(perfil.reservasNoAsignadas || {}).length;
+        console.log(`⚠️  Fallback RNA: ${cuposSinAgendar}`);
+      }
+    } catch(e) {
+      cuposSinAgendar = Object.keys(perfil.reservasNoAsignadas || {}).length;
+    }
     console.log(`🎯 Cupos sin agendar: ${cuposSinAgendar}`);
 
     if (cuposSinAgendar === 0) {
