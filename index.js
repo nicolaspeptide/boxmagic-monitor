@@ -112,19 +112,11 @@ async function revisar() {
     // reservasNoAsignadas = cupos comprados que aún no tienen clase asignada.
     // Son los cupos que Nicolás puede usar para reservar.
     // Contamos TODAS porque son del plan activo (el gimnasio solo muestra las vigentes).
-    // Calcular cupos igual que la app: total - agendadas - usadas = sin agendar
-    const nombrePlan = plan.planNombre || '';
-    const matchTotal = nombrePlan.match(/(\d+)\s*Sesiones/i);
-    const totalPlan  = matchTotal ? parseInt(matchTotal[1]) : 16;
-
-    // Usar TODAS las reservas (no filtrar por membresiaID — ese campo no existe en reservas)
-    const todasReservas = Object.values(perfil.reservas || {});
-    const ahora     = ahoraChile();
-    const agendadas = todasReservas.filter(r => new Date(r.fechaInicio) >= ahora).length;
-    const usadas    = todasReservas.filter(r => new Date(r.fechaInicio) <  ahora).length;
-    const cuposSinAgendar = Math.max(0, totalPlan - agendadas - usadas);
-
-    console.log(`📊 Total:${totalPlan} Agendadas:${agendadas} Usadas:${usadas} → Sin agendar:${cuposSinAgendar}`);
+    // reservasNoAsignadas = fuente más confiable para cupos sin agendar
+    // Son exactamente los cupos comprados sin fecha asignada
+    // El número exacto (3 vs 5) no afecta la funcionalidad — lo que importa es > 0
+    const cuposSinAgendar = Object.keys(perfil.reservasNoAsignadas || {}).length;
+    console.log(`🎯 Cupos sin agendar: ${cuposSinAgendar} (reservasNoAsignadas)`);
     console.log(`🎯 Cupos sin agendar: ${cuposSinAgendar}`);
 
     if (cuposSinAgendar === 0) {
