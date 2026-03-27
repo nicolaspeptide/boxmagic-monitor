@@ -5,7 +5,7 @@ const fs = require('fs');
 const CONFIG = {
   loginUrl:   'https://members.boxmagic.app/a/g?o=pi-e',
   perfilUrl:  'https://members.boxmagic.app/g/oGDPQaGLb5/perfil',
-  gimnasioID: 'oGDPQaGLb5',
+  horariosUrl:'https://members.boxmagic.app/g/oGDPQaGLb5/horarios',
   email:      process.env.BOXMAGIC_EMAIL,
   password:   process.env.BOXMAGIC_PASSWORD,
 };
@@ -71,7 +71,7 @@ function obtenerProximasFechas(slot, finVigencia) {
   return fechas;
 }
 
-function obtenerReservasAgendadas(perfil) {
+function obtenerReservasYVigencia(perfil) {
   const ahora = new Date();
   const membresiaActiva = Object.values(perfil.membresias || {}).find(function(m) {
     return m.activa && new Date(m.finVigencia) > ahora;
@@ -97,15 +97,8 @@ async function main() {
   const page = await context.newPage();
 
   let perfilData = null;
-  let authToken = null;
 
-  page.on('request', function(request) {
-    const auth = request.headers()['authorization'];
-    if (auth && auth.startsWith('Bearer ')) {
-      authToken = auth.replace('Bearer ', '');
-    }
-  });
-
+  // Interceptar perfil
   page.on('response', async function(response) {
     try {
       const ct = response.headers()['content-type'] || '';
@@ -120,6 +113,7 @@ async function main() {
   });
 
   try {
+    // Login
     console.log('Iniciando login...');
     await page.goto(CONFIG.loginUrl, { waitUntil: 'networkidle' });
     await page.fill('input[type="email"], input[name="email"]', CONFIG.email);
@@ -127,83 +121,122 @@ async function main() {
     await page.click('button[type="submit"], button:has-text("Ingresar"), button:has-text("Entrar")');
     await page.waitForTimeout(3000);
     console.log('Login exitoso');
+
+    // Cargar perfil
     await page.goto(CONFIG.perfilUrl, { waitUntil: 'networkidle' });
     await page.waitForTimeout(8000);
 
     if (!perfilData) { console.log('No se obtuvo perfil'); return; }
-    if (!authToken)  { console.log('No se obtuvo token'); return; }
-    console.log('Token obtenido');
 
-    const datos = obtenerReservasAgendadas(perfilData);
+    const datos = obtenerReservasYVigencia(perfilData);
     const reservasAgendadas = datos.reservasAgendadas;
     const finVigencia = datos.finVigencia;
     if (!finVigencia) { console.log('Sin membresia activa'); return; }
+
     console.log('Plan vigente hasta: ' + finVigencia.toISOString().slice(0, 10));
     console.log('Reservas agendadas: ' + reservasAgendadas.size);
 
-    const pendientes = [];
-
+    // Determinar fechas pendientes por slot
+    const fechasPendientesPorSlot = [];
     for (const slot of SLOTS) {
       const fechas = obtenerProximasFechas(slot, finVigencia);
-      const fechasSinAgendar = [];
-
-      for (const fecha of fechas) {
+      const sinAgendar = fechas.filter(function(fecha) {
         const key = fecha + '_' + slot.horarioID;
         if (reservasAgendadas.has(key)) {
           console.log('Agendado: ' + slot.nombre + ' ' + fecha);
-        } else if (yaAvisado(key)) {
+          return false;
+        }
+        if (yaAvisado(key)) {
           console.log('Ya avisado: ' + slot.nombre + ' ' + fecha);
-        } else {
-          fechasSinAgendar.push(fecha);
+          return false;
         }
-      }
-
-      if (fechasSinAgendar.length === 0) continue;
-
-      const instancias = fechasSinAgendar.map(function(fecha) {
-        return { fechaYMD: fecha, claseID: slot.claseID, horarioID: slot.horarioID };
+        return true;
       });
+      if (sinAgendar.length > 0) {
+        fechasPendientesPorSlot.push({ slot: slot, fechas: sinAgendar });
+      }
+    }
 
-      console.log('Consultando disponibilidad: ' + slot.nombre + ' (' + fechasSinAgendar.length + ' fechas)');
+    if (fechasPendientesPorSlot.length === 0) {
+      console.log('Todo agendado o ya avisado.');
+      return;
+    }
 
-      // Llamar porIDs desde dentro del browser para evitar bloqueos CORS/auth
-      const respuesta = await page.evaluate(async function(params) {
+    // Para cada fecha pendiente, navegar a horarios y capturar porIDs
+    const pendientes = [];
+
+    // Recolectar todas las fechas unicas a revisar
+    const fechasUnicas = new Set();
+    for (const item of fechasPendientesPorSlot) {
+      for (const fecha of item.fechas) {
+        fechasUnicas.add(fecha);
+      }
+    }
+
+    // Por cada fecha, navegar a horarios y capturar disponibilidad
+    const disponibilidadPorFecha = {};
+
+    for (const fecha of fechasUnicas) {
+      console.log('Navegando horarios para: ' + fecha);
+
+      const cuposCapturados = {};
+
+      // Listener para capturar porIDs de esta fecha
+      const listener = async function(response) {
         try {
-          const res = await fetch(params.url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer ' + params.token,
-              'Origin': 'https://members.boxmagic.app',
-            },
-            body: JSON.stringify({ instancias: params.instancias }),
-          });
-          if (!res.ok) return { error: res.status };
-          return await res.json();
-        } catch (e) {
-          return { error: e.message };
-        }
-      }, {
-        url: 'https://api-bh.boxmagic.app/boxmagic/gimnasio/' + CONFIG.gimnasioID + '/instancias/porIDs',
-        token: authToken,
-        instancias: instancias,
-      });
+          const url = response.url();
+          if (url.includes('porIDs')) {
+            const ct = response.headers()['content-type'] || '';
+            if (ct.includes('application/json')) {
+              const json = await response.json();
+              console.log('porIDs capturado: ' + JSON.stringify(json).slice(0, 300));
+              // Guardar todas las instancias capturadas
+              if (json && typeof json === 'object') {
+                for (const key of Object.keys(json)) {
+                  cuposCapturados[key] = json[key];
+                }
+              }
+            }
+          }
+        } catch (e) {}
+      };
 
-      if (!respuesta || respuesta.error) {
-        console.log('Error porIDs: ' + (respuesta ? respuesta.error : 'null'));
-        continue;
-      }
+      page.on('response', listener);
 
-      console.log('Respuesta porIDs: ' + JSON.stringify(respuesta).slice(0, 200));
+      // Navegar a la fecha especifica en el calendario
+      const urlFecha = CONFIG.horariosUrl + '?fecha=' + fecha;
+      await page.goto(urlFecha, { waitUntil: 'networkidle' });
+      await page.waitForTimeout(5000);
 
-      const instanciasData = respuesta.instancias || respuesta;
+      page.off('response', listener);
 
-      for (const fecha of fechasSinAgendar) {
+      disponibilidadPorFecha[fecha] = cuposCapturados;
+      console.log('Instancias capturadas para ' + fecha + ': ' + Object.keys(cuposCapturados).length);
+    }
+
+    // Analizar disponibilidad por slot
+    for (const item of fechasPendientesPorSlot) {
+      const slot = item.slot;
+      for (const fecha of item.fechas) {
+        const cupos = disponibilidadPorFecha[fecha] || {};
         const instanciaID = 'i' + fecha + '>' + slot.claseID + '>' + slot.horarioID;
-        const instancia = instanciasData[instanciaID] || instanciasData[fecha];
+
+        // Buscar la instancia en los datos capturados
+        let instancia = cupos[instanciaID];
+
+        // Si no encontramos con ese key exacto, buscar por horarioID
+        if (!instancia) {
+          for (const key of Object.keys(cupos)) {
+            if (key.includes(slot.horarioID)) {
+              instancia = cupos[key];
+              console.log('Instancia encontrada con key alternativo: ' + key);
+              break;
+            }
+          }
+        }
 
         if (!instancia) {
-          console.log('Sin datos para: ' + slot.nombre + ' ' + fecha);
+          console.log('Sin datos de disponibilidad: ' + slot.nombre + ' ' + fecha);
           continue;
         }
 
@@ -222,10 +255,11 @@ async function main() {
     }
 
     if (pendientes.length === 0) {
-      console.log('Sin clases disponibles sin agendar.');
+      console.log('Sin clases disponibles con cupo.');
       return;
     }
 
+    // Armar mensaje
     const lineas = [
       'BoxMagic - Cupo disponible',
       '',
@@ -239,8 +273,7 @@ async function main() {
       porFecha[item.fecha].push(item.slot.nombre + ' (' + item.cuposLibres + ' cupo(s))');
     }
 
-    const fechasOrdenadas = Object.keys(porFecha).sort();
-    for (const fecha of fechasOrdenadas) {
+    for (const fecha of Object.keys(porFecha).sort()) {
       const fechaLegible = new Date(fecha + 'T12:00:00').toLocaleDateString('es-CL', {
         weekday: 'long', day: 'numeric', month: 'long'
       });
@@ -253,10 +286,8 @@ async function main() {
 
     lineas.push('Agenda en: members.boxmagic.app');
 
-    const mensaje = lineas.join('\n');
-
     try {
-      await enviarWhatsApp(mensaje);
+      await enviarWhatsApp(lineas.join('\n'));
       for (const item of pendientes) {
         marcarAvisado(item.key);
       }
