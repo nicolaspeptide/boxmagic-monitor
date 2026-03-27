@@ -62,39 +62,51 @@ async function getPlanActivo(page) {
     let planData = null;
 
     const handler = async (response) => {
-      if (response.url().includes('perfilEnGimnasio')) {
+      // Capturar CUALQUIER respuesta JSON de boxmagic
+      if (response.url().includes('boxmagic') || response.url().includes('parse')) {
         try {
-          const data = await response.json();
+          const contentType = response.headers()['content-type'] || '';
+          if (!contentType.includes('application/json')) return;
 
+          const data = await response.json();
+          console.log(`📡 URL: ${response.url()}`);
+          console.log(`📦 Keys top-level: ${JSON.stringify(Object.keys(data))}`);
+
+          // Si tiene perfilEnGimnasio, loguear estructura completa
+          if (data.perfilEnGimnasio) {
+            console.log('✅ Encontrado perfilEnGimnasio');
+            console.log('   Keys:', JSON.stringify(Object.keys(data.perfilEnGimnasio)));
+
+            if (data.perfilEnGimnasio.membresias) {
+              const mems = data.perfilEnGimnasio.membresias;
+              console.log('   Membresías keys:', JSON.stringify(Object.keys(mems)));
+              for (const key of Object.keys(mems)) {
+                const m = mems[key];
+                console.log(`   [${key}] activa=${m.activa} nombre=${m.planNombre || m.nombre || m.plan || JSON.stringify(Object.keys(m))}`);
+              }
+            } else {
+              console.log('   ❌ No tiene .membresias');
+              console.log('   Contenido:', JSON.stringify(data.perfilEnGimnasio).substring(0, 500));
+            }
+          }
+
+          // Buscar membresía activa sin filtrar por nombre
           if (data.perfilEnGimnasio?.membresias) {
             const membresias = data.perfilEnGimnasio.membresias;
             const reservas = data.perfilEnGimnasio.reservas || {};
 
-            // Debug
             for (const key in membresias) {
               const m = membresias[key];
-              console.log(`🔍 Membresía: ${key}`);
-              console.log(`   activa: ${m.activa}`);
-              console.log(`   planNombre: ${m.planNombre}`);
-              console.log(`   finVigencia: ${m.finVigencia}`);
-            }
-
-            // Buscar membresía activa con plan de sesiones
-            for (const key in membresias) {
-              const m = membresias[key];
-              if (!m.activa) continue;
-              if (!m.planNombre?.includes('Sesiones')) continue;
+              if (!m.activa) continue; // único filtro por ahora
 
               const finVigencia = new Date(m.finVigencia);
               const hoy = getFechaChile();
               if (finVigencia < hoy) continue;
 
-              // Reservas activas de esta membresía
               const reservasDelPlan = Object.values(reservas).filter(r =>
-                r.membresiaID === m.membresiaID
+                r.membresiaID === (m.membresiaID || key)
               );
 
-              // Fechas ya reservadas
               const fechasReservadas = new Set(
                 reservasDelPlan.map(r => {
                   const fechaInicio = new Date(r.fechaInicio);
@@ -104,33 +116,29 @@ async function getPlanActivo(page) {
                 })
               );
 
-              // Cupos
-              const match = m.planNombre.match(/(\d+)\s*Sesiones/);
+              const nombre = m.planNombre || m.nombre || m.plan || 'Plan desconocido';
+              const match = nombre.match(/(\d+)/);
               const totalCupos = match ? parseInt(match[1]) : 16;
               const cuposUsados = reservasDelPlan.length;
-              const cuposDisponibles = totalCupos - cuposUsados;
 
               planData = {
-                membresiaID: m.membresiaID,
-                planNombre: m.planNombre,
+                membresiaID: m.membresiaID || key,
+                planNombre: nombre,
                 finVigencia: m.finVigencia,
-                cuposDisponibles,
+                cuposDisponibles: totalCupos - cuposUsados,
                 cuposUsados,
                 totalCupos,
                 fechasReservadas
               };
 
-              console.log(`📋 Plan: ${m.planNombre}`);
+              console.log(`📋 Plan encontrado: ${nombre}`);
               console.log(`📅 Vigente hasta: ${finVigencia.toLocaleDateString('es-CL')}`);
-              console.log(`🎯 Cupos: ${cuposUsados}/${totalCupos} usados, ${cuposDisponibles} disponibles`);
+              console.log(`🎯 Cupos: ${cuposUsados}/${totalCupos}`);
               break;
             }
-          } else {
-            console.log('❌ No se encontró perfilEnGimnasio.membresias');
-            console.log('Keys disponibles:', JSON.stringify(Object.keys(data)));
           }
         } catch(e) {
-          console.error('Error parseando perfilEnGimnasio:', e.message);
+          // ignorar respuestas no-JSON
         }
       }
     };
