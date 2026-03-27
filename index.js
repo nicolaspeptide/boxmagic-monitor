@@ -86,85 +86,122 @@ function obtenerReservasYVigencia(perfil) {
   return { reservasAgendadas: reservasAgendadas, finVigencia: new Date(membresiaActiva.finVigencia) };
 }
 
-async function leerDisponibilidadDOM(page) {
+// Leer todas las tarjetas de clases del DOM
+// Las tarjetas NO son links — son divs/buttons con texto visible
+async function leerTarjetasDOM(page) {
   return await page.evaluate(function() {
-    var resultado = {};
+    var tarjetas = [];
 
-    // Buscar todos los links de la pagina
-    var todosLosLinks = document.querySelectorAll('a');
-    todosLosLinks.forEach(function(link) {
-      var href = link.href || link.getAttribute('href') || '';
+    // El texto de la pagina contiene info de clases
+    // Buscar todos los elementos que tengan "Participants" o "Participantes" o "capacity"
+    var todos = document.querySelectorAll('*');
+    var elementosTarjeta = [];
 
-      // Buscar instanciaID en el href
-      var match = href.match(/instanciaID=([^&\s]+)/);
-      if (!match) {
-        // Tambien buscar formato i2026-XX-XX>claseID>horarioID directamente en href
-        match = href.match(/(i\d{4}-\d{2}-\d{2}>[^&\s>]+>[^&\s>]+)/);
-        if (match) match[1] = match[1];
-      }
-
-      if (match) {
-        var instanciaID = decodeURIComponent(match[1]);
-        if (!resultado[instanciaID]) {
-          var contenedor = link;
-          var texto = '';
-          for (var i = 0; i < 10; i++) {
-            if (contenedor) {
-              texto = contenedor.innerText || '';
-              if (texto.includes('Participants') || texto.includes('Participantes') ||
-                  texto.toLowerCase().includes('capacity') || texto.toLowerCase().includes('capacidad') ||
-                  texto.toLowerCase().includes('full') || texto.toLowerCase().includes('completa')) break;
-              contenedor = contenedor.parentElement;
-            }
+    todos.forEach(function(el) {
+      var txt = el.innerText || '';
+      // Un elemento tarjeta tiene participantes Y hora Y es relativamente pequeño
+      if ((txt.includes('Participants') || txt.includes('Participantes')) &&
+          txt.match(/\d+:\d+/) &&
+          txt.length < 500 &&
+          el.children.length > 0) {
+        // Evitar duplicados — solo tomar el elemento mas especifico
+        var esHijo = false;
+        for (var i = 0; i < elementosTarjeta.length; i++) {
+          if (elementosTarjeta[i].contains(el)) {
+            // Ya tenemos un padre, reemplazar con hijo mas especifico
+            elementosTarjeta[i] = el;
+            esHijo = true;
+            break;
           }
-          var capacidadCompleta = texto.toLowerCase().includes('capacity full') ||
-                                  texto.toLowerCase().includes('capacidad completa') ||
-                                  texto.toLowerCase().includes('full');
-          var partMatch = texto.match(/(\d+)\s*\/\s*(\d+)\s*(Participants|Participantes)/i) ||
-                          texto.match(/(\d+)\s*(Participants|Participantes)/i);
-          var participantes = 0;
-          var cuposMax = 6;
-          if (partMatch) {
-            participantes = parseInt(partMatch[1]);
-            if (partMatch[2] && !isNaN(parseInt(partMatch[2]))) cuposMax = parseInt(partMatch[2]);
+          if (el.contains(elementosTarjeta[i])) {
+            esHijo = true;
+            break;
           }
-          resultado[instanciaID] = {
-            participantes: participantes,
-            cuposMax: cuposMax,
-            capacidadCompleta: capacidadCompleta,
-            textoMuestra: texto.slice(0, 100),
-          };
         }
+        if (!esHijo) elementosTarjeta.push(el);
       }
     });
-    return resultado;
+
+    elementosTarjeta.forEach(function(el) {
+      var txt = (el.innerText || '').trim();
+
+      // Extraer hora — formato "7:00pm to 8:00pm" o "19:00 a 20:00"
+      var horaMatch = txt.match(/(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)/i) ||
+                      txt.match(/(\d{1,2}):(\d{2})/);
+      var hora = horaMatch ? horaMatch[0] : '';
+
+      // Extraer participantes
+      var partMatch = txt.match(/(\d+)\s*\/\s*(\d+)\s*(Participants|Participantes)/i) ||
+                      txt.match(/(\d+)\s*(Participants|Participantes)/i);
+      var participantes = partMatch ? parseInt(partMatch[1]) : 0;
+      var cuposMax = (partMatch && partMatch[2] && !isNaN(parseInt(partMatch[2]))) ? parseInt(partMatch[2]) : 6;
+
+      // Detectar capacidad completa
+      var capacidadCompleta = txt.toLowerCase().includes('capacity full') ||
+                              txt.toLowerCase().includes('capacidad completa') ||
+                              txt.toLowerCase().includes('full capacity');
+
+      // Buscar instanciaID en los atributos del elemento o sus hijos
+      var instanciaID = '';
+      var allEls = [el].concat(Array.from(el.querySelectorAll('*')));
+      for (var i = 0; i < allEls.length; i++) {
+        var e = allEls[i];
+        var href = e.href || e.getAttribute('href') || e.getAttribute('data-instancia') || e.getAttribute('onclick') || '';
+        var m = href.match(/instanciaID=([^&\s"']+)/);
+        if (m) { instanciaID = decodeURIComponent(m[1]); break; }
+        // Buscar en todos los atributos
+        for (var j = 0; j < e.attributes.length; j++) {
+          var val = e.attributes[j].value || '';
+          var m2 = val.match(/instanciaID=([^&\s"']+)/);
+          if (m2) { instanciaID = decodeURIComponent(m2[1]); break; }
+          // Buscar formato i2026-XX-XX
+          var m3 = val.match(/(i\d{4}-\d{2}-\d{2}>[^&\s"'>]+>[^&\s"'>]+)/);
+          if (m3) { instanciaID = m3[1]; break; }
+        }
+        if (instanciaID) break;
+      }
+
+      // Extraer fecha del texto (formato MAR 26, MON 30, etc)
+      var fechaMatch = txt.match(/(MON|TUE|WED|THU|FRI|SAT|SUN|LUN|MAR|MIE|JUE|VIE|SAB|DOM)\s+(\d+)/i);
+
+      tarjetas.push({
+        instanciaID: instanciaID,
+        hora: hora,
+        participantes: participantes,
+        cuposMax: cuposMax,
+        capacidadCompleta: capacidadCompleta,
+        fechaTexto: fechaMatch ? fechaMatch[0] : '',
+        textoCompleto: txt.slice(0, 150),
+      });
+    });
+
+    return tarjetas;
   });
 }
 
 async function avanzarSemana(page) {
+  // El boton siguiente tiene aria-label="Boton" — hay 6 botones iguales
+  // El de siguiente semana es el ultimo (o penultimo)
+  // Intentar con el boton que dice "next" en texto o el ultimo boton
   try { await page.click('button[class*="next"]', { timeout: 2000 }); return 'class:next'; } catch (e) {}
-  try { await page.click('[class*="nextWeek"]', { timeout: 2000 }); return 'class:nextWeek'; } catch (e) {}
-  try { await page.click('[class*="next-week"]', { timeout: 2000 }); return 'class:next-week'; } catch (e) {}
-  try { await page.click('button[aria-label*="iguiente"]', { timeout: 2000 }); return 'aria:siguiente'; } catch (e) {}
-  try { await page.click('button[aria-label*="ext"]', { timeout: 2000 }); return 'aria:next'; } catch (e) {}
-  try { await page.click('button[aria-label*="orward"]', { timeout: 2000 }); return 'aria:forward'; } catch (e) {}
+  try { await page.click('[class*="nextWeek"]', { timeout: 2000 }); return 'nextWeek'; } catch (e) {}
+  try { await page.click('button[aria-label="next"]', { timeout: 2000 }); return 'aria:next'; } catch (e) {}
+  try { await page.click('button[aria-label="Next"]', { timeout: 2000 }); return 'aria:Next'; } catch (e) {}
 
-  // Buscar el boton de "Proximo X" al pie del calendario
+  // Buscar boton con texto "next" (en ingles porque la app esta en ingles)
   try { await page.click('button:has-text("next")', { timeout: 2000 }); return 'text:next'; } catch (e) {}
   try { await page.click('button:has-text("Next")', { timeout: 2000 }); return 'text:Next'; } catch (e) {}
-  try { await page.click('button:has-text("Pr")', { timeout: 2000 }); return 'text:Proximo'; } catch (e) {}
 
-  const botones = await page.$$('button');
-  for (const btn of botones) {
-    const txt = (await btn.innerText()).trim();
-    const cls = (await btn.getAttribute('class')) || '';
-    if (txt === '>' || txt === '\u203a' || txt === '\u2192' || txt === '>>' ||
-        cls.includes('next') || cls.includes('Next') || cls.includes('forward') ||
-        cls.includes('right') || cls.includes('Right')) {
-      await btn.click();
-      return 'btn:' + txt + '|' + cls.slice(0, 30);
-    }
+  // El boton de siguiente semana aparece al pie como "Thursday 9" o similar
+  // Intentar hacer clic en el ultimo boton de la pagina que no sea de navegacion
+  const botones = await page.$$('button[aria-label="Boton"]');
+  console.log('Botones con aria Boton: ' + botones.length);
+  if (botones.length > 0) {
+    // El ultimo boton suele ser "siguiente semana"
+    await botones[botones.length - 1].click();
+    return 'ultimo-boton-Boton';
   }
+
   return null;
 }
 
@@ -234,41 +271,50 @@ async function main() {
     await page.goto(CONFIG.horariosUrl, { waitUntil: 'networkidle' });
     await page.waitForTimeout(8000);
 
-    // Debug: ver todos los links y botones
-    const debugDOM = await page.evaluate(function() {
-      var links = document.querySelectorAll('a');
-      var todosLinks = Array.from(links).map(function(a) {
-        return (a.href || a.getAttribute('href') || '').slice(0, 100);
-      }).filter(function(h) { return h.length > 5; });
-
-      var botones = document.querySelectorAll('button');
-      var todosBotones = Array.from(botones).map(function(b) {
-        return (b.className || '').slice(0, 40) + '|' + (b.innerText || '').slice(0, 20) + '|aria:' + (b.getAttribute('aria-label') || '');
-      });
-
-      return {
-        links: todosLinks.slice(0, 20),
-        botones: todosBotones.slice(0, 20),
-        texto: (document.body.innerText || '').slice(0, 400),
-      };
+    // Interceptar porIDs responses ademas de leer DOM
+    const disponibilidadAPI = {};
+    page.on('response', async function(response) {
+      try {
+        const url = response.url();
+        if (url.includes('porIDs')) {
+          const ct = response.headers()['content-type'] || '';
+          if (ct.includes('application/json')) {
+            const json = await response.json();
+            if (json && typeof json === 'object') {
+              for (const key of Object.keys(json)) {
+                disponibilidadAPI[key] = json[key];
+              }
+              console.log('porIDs interceptado: ' + Object.keys(json).length + ' instancias');
+            }
+          }
+        }
+      } catch (e) {}
     });
-
-    console.log('Links (' + debugDOM.links.length + '): ' + JSON.stringify(debugDOM.links.slice(0, 10)));
-    console.log('Botones (' + debugDOM.botones.length + '): ' + JSON.stringify(debugDOM.botones.slice(0, 10)));
-    console.log('Texto: ' + debugDOM.texto.replace(/\n/g, '|').slice(0, 300));
 
     const disponibilidad = {};
     const maxSemanas = 8;
 
     for (var semana = 0; semana < maxSemanas; semana++) {
-      const dispSemana = await leerDisponibilidadDOM(page);
-      const count = Object.keys(dispSemana).length;
-      console.log('Semana ' + (semana + 1) + ': ' + count + ' instancias');
+      // Leer tarjetas del DOM
+      const tarjetas = await leerTarjetasDOM(page);
+      console.log('Semana ' + (semana + 1) + ': ' + tarjetas.length + ' tarjetas en DOM');
 
-      for (const key of Object.keys(dispSemana)) {
+      tarjetas.forEach(function(t) {
+        console.log('  Tarjeta: hora=' + t.hora + ' part=' + t.participantes + '/' + t.cuposMax + ' lleno=' + t.capacidadCompleta + ' instID=' + t.instanciaID.slice(0, 40) + ' fecha=' + t.fechaTexto);
+        if (t.instanciaID) {
+          disponibilidad[t.instanciaID] = t;
+        }
+      });
+
+      // Tambien registrar lo que llego via API
+      for (const key of Object.keys(disponibilidadAPI)) {
         if (!disponibilidad[key]) {
-          disponibilidad[key] = dispSemana[key];
-          console.log('  ' + key.slice(0, 60) + ' lleno:' + dispSemana[key].capacidadCompleta + ' ' + dispSemana[key].participantes + '/' + dispSemana[key].cuposMax);
+          const d = disponibilidadAPI[key];
+          disponibilidad[key] = {
+            participantes: d.participantes || 0,
+            cuposMax: d.cupos || 6,
+            capacidadCompleta: d.capacidadCompleta || false,
+          };
         }
       }
 
@@ -278,7 +324,7 @@ async function main() {
         .map(function(k) { const m = k.match(/i(\d{4}-\d{2}-\d{2})/); return m ? m[1] : null; })
         .filter(Boolean).sort();
       const fechaMaxDOM = fechasEnDOM[fechasEnDOM.length - 1] || '';
-      console.log('Max pendiente: ' + fechaMaxPendiente + ' | max DOM: ' + fechaMaxDOM);
+      console.log('Max pendiente: ' + fechaMaxPendiente + ' | max en datos: ' + fechaMaxDOM + ' | total instancias: ' + Object.keys(disponibilidad).length);
 
       if (fechaMaxDOM >= fechaMaxPendiente && semana > 0) {
         console.log('Todas las fechas cubiertas.');
@@ -287,12 +333,7 @@ async function main() {
 
       const resultado = await avanzarSemana(page);
       if (!resultado) {
-        const btnTexts = await page.$$eval('button', function(btns) {
-          return btns.map(function(b) {
-            return (b.className || '').slice(0, 30) + '|' + (b.innerText || '').slice(0, 20) + '|' + (b.getAttribute('aria-label') || '');
-          });
-        });
-        console.log('Sin boton siguiente. Botones: ' + JSON.stringify(btnTexts.slice(0, 15)));
+        console.log('No se pudo avanzar semana.');
         break;
       }
       console.log('Avanzando: ' + resultado);
