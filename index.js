@@ -89,35 +89,50 @@ function obtenerReservasYVigencia(perfil) {
 async function leerDisponibilidadDOM(page) {
   return await page.evaluate(function() {
     var resultado = {};
-    var todosLosLinks = document.querySelectorAll('a[href*="instanciaID"]');
+
+    // Buscar todos los links de la pagina
+    var todosLosLinks = document.querySelectorAll('a');
     todosLosLinks.forEach(function(link) {
       var href = link.href || link.getAttribute('href') || '';
+
+      // Buscar instanciaID en el href
       var match = href.match(/instanciaID=([^&\s]+)/);
+      if (!match) {
+        // Tambien buscar formato i2026-XX-XX>claseID>horarioID directamente en href
+        match = href.match(/(i\d{4}-\d{2}-\d{2}>[^&\s>]+>[^&\s>]+)/);
+        if (match) match[1] = match[1];
+      }
+
       if (match) {
         var instanciaID = decodeURIComponent(match[1]);
         if (!resultado[instanciaID]) {
           var contenedor = link;
           var texto = '';
-          for (var i = 0; i < 8; i++) {
+          for (var i = 0; i < 10; i++) {
             if (contenedor) {
               texto = contenedor.innerText || '';
-              if (texto.includes('Participantes') || texto.toLowerCase().includes('capacidad')) break;
+              if (texto.includes('Participants') || texto.includes('Participantes') ||
+                  texto.toLowerCase().includes('capacity') || texto.toLowerCase().includes('capacidad') ||
+                  texto.toLowerCase().includes('full') || texto.toLowerCase().includes('completa')) break;
               contenedor = contenedor.parentElement;
             }
           }
-          var capacidadCompleta = texto.toLowerCase().includes('capacidad completa');
-          var partMatch = texto.match(/(\d+)\s*\/\s*(\d+)\s*Participantes/i) ||
-                          texto.match(/(\d+)\s*Participantes/i);
+          var capacidadCompleta = texto.toLowerCase().includes('capacity full') ||
+                                  texto.toLowerCase().includes('capacidad completa') ||
+                                  texto.toLowerCase().includes('full');
+          var partMatch = texto.match(/(\d+)\s*\/\s*(\d+)\s*(Participants|Participantes)/i) ||
+                          texto.match(/(\d+)\s*(Participants|Participantes)/i);
           var participantes = 0;
           var cuposMax = 6;
           if (partMatch) {
             participantes = parseInt(partMatch[1]);
-            if (partMatch[2]) cuposMax = parseInt(partMatch[2]);
+            if (partMatch[2] && !isNaN(parseInt(partMatch[2]))) cuposMax = parseInt(partMatch[2]);
           }
           resultado[instanciaID] = {
             participantes: participantes,
             cuposMax: cuposMax,
             capacidadCompleta: capacidadCompleta,
+            textoMuestra: texto.slice(0, 100),
           };
         }
       }
@@ -132,24 +147,24 @@ async function avanzarSemana(page) {
   try { await page.click('[class*="next-week"]', { timeout: 2000 }); return 'class:next-week'; } catch (e) {}
   try { await page.click('button[aria-label*="iguiente"]', { timeout: 2000 }); return 'aria:siguiente'; } catch (e) {}
   try { await page.click('button[aria-label*="ext"]', { timeout: 2000 }); return 'aria:next'; } catch (e) {}
+  try { await page.click('button[aria-label*="orward"]', { timeout: 2000 }); return 'aria:forward'; } catch (e) {}
+
+  // Buscar el boton de "Proximo X" al pie del calendario
+  try { await page.click('button:has-text("next")', { timeout: 2000 }); return 'text:next'; } catch (e) {}
+  try { await page.click('button:has-text("Next")', { timeout: 2000 }); return 'text:Next'; } catch (e) {}
+  try { await page.click('button:has-text("Pr")', { timeout: 2000 }); return 'text:Proximo'; } catch (e) {}
 
   const botones = await page.$$('button');
   for (const btn of botones) {
     const txt = (await btn.innerText()).trim();
     const cls = (await btn.getAttribute('class')) || '';
     if (txt === '>' || txt === '\u203a' || txt === '\u2192' || txt === '>>' ||
-        cls.includes('next') || cls.includes('Next') || cls.includes('forward')) {
+        cls.includes('next') || cls.includes('Next') || cls.includes('forward') ||
+        cls.includes('right') || cls.includes('Right')) {
       await btn.click();
       return 'btn:' + txt + '|' + cls.slice(0, 30);
     }
   }
-
-  // Intentar con el boton "Proximo X" que aparece al pie del calendario
-  try {
-    await page.click('button:has-text("Pr")', { timeout: 2000 });
-    return 'btn:Proximo';
-  } catch (e) {}
-
   return null;
 }
 
@@ -215,22 +230,32 @@ async function main() {
       return;
     }
 
-    // Navegar a horarios con la URL correcta
     console.log('Navegando a horarios...');
     await page.goto(CONFIG.horariosUrl, { waitUntil: 'networkidle' });
     await page.waitForTimeout(8000);
 
-    const debugInfo = await page.evaluate(function() {
+    // Debug: ver todos los links y botones
+    const debugDOM = await page.evaluate(function() {
+      var links = document.querySelectorAll('a');
+      var todosLinks = Array.from(links).map(function(a) {
+        return (a.href || a.getAttribute('href') || '').slice(0, 100);
+      }).filter(function(h) { return h.length > 5; });
+
+      var botones = document.querySelectorAll('button');
+      var todosBotones = Array.from(botones).map(function(b) {
+        return (b.className || '').slice(0, 40) + '|' + (b.innerText || '').slice(0, 20) + '|aria:' + (b.getAttribute('aria-label') || '');
+      });
+
       return {
-        title: document.title,
-        url: window.location.href,
-        links: document.querySelectorAll('a[href*="instanciaID"]').length,
-        botones: document.querySelectorAll('button').length,
-        texto: (document.body.innerText || '').slice(0, 300).replace(/\n/g, '|'),
+        links: todosLinks.slice(0, 20),
+        botones: todosBotones.slice(0, 20),
+        texto: (document.body.innerText || '').slice(0, 400),
       };
     });
-    console.log('Horarios - title: ' + debugInfo.title + ' | links: ' + debugInfo.links + ' | botones: ' + debugInfo.botones);
-    console.log('Horarios - texto: ' + debugInfo.texto.slice(0, 200));
+
+    console.log('Links (' + debugDOM.links.length + '): ' + JSON.stringify(debugDOM.links.slice(0, 10)));
+    console.log('Botones (' + debugDOM.botones.length + '): ' + JSON.stringify(debugDOM.botones.slice(0, 10)));
+    console.log('Texto: ' + debugDOM.texto.replace(/\n/g, '|').slice(0, 300));
 
     const disponibilidad = {};
     const maxSemanas = 8;
@@ -243,7 +268,7 @@ async function main() {
       for (const key of Object.keys(dispSemana)) {
         if (!disponibilidad[key]) {
           disponibilidad[key] = dispSemana[key];
-          console.log('  ' + key.slice(0, 50) + ' lleno:' + dispSemana[key].capacidadCompleta + ' ' + dispSemana[key].participantes + '/' + dispSemana[key].cuposMax);
+          console.log('  ' + key.slice(0, 60) + ' lleno:' + dispSemana[key].capacidadCompleta + ' ' + dispSemana[key].participantes + '/' + dispSemana[key].cuposMax);
         }
       }
 
@@ -264,10 +289,10 @@ async function main() {
       if (!resultado) {
         const btnTexts = await page.$$eval('button', function(btns) {
           return btns.map(function(b) {
-            return (b.className || '').slice(0, 30) + '|' + (b.innerText || '').slice(0, 20);
+            return (b.className || '').slice(0, 30) + '|' + (b.innerText || '').slice(0, 20) + '|' + (b.getAttribute('aria-label') || '');
           });
         });
-        console.log('Sin boton siguiente. Botones: ' + btnTexts.slice(0, 15).join(' || '));
+        console.log('Sin boton siguiente. Botones: ' + JSON.stringify(btnTexts.slice(0, 15)));
         break;
       }
       console.log('Avanzando: ' + resultado);
