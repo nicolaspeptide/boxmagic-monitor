@@ -5,6 +5,7 @@ const fs = require('fs');
 const CONFIG = {
   loginUrl:   'https://members.boxmagic.app/a/g?o=pi-e',
   perfilUrl:  'https://members.boxmagic.app/g/oGDPQaGLb5/perfil',
+  horariosUrl:'https://members.boxmagic.app/a/g/oGDPQaGLb5/horarios',
   email:      process.env.BOXMAGIC_EMAIL,
   password:   process.env.BOXMAGIC_PASSWORD,
 };
@@ -126,36 +127,29 @@ async function leerDisponibilidadDOM(page) {
 }
 
 async function avanzarSemana(page) {
-  // Usar click de Playwright (no page.evaluate) para evitar problemas de selectores
-  try {
-    // Intentar con selector Playwright nativo
-    await page.click('button[class*="next"]', { timeout: 2000 });
-    return 'class:next';
-  } catch (e) {}
-  try {
-    await page.click('[class*="nextWeek"]', { timeout: 2000 });
-    return 'class:nextWeek';
-  } catch (e) {}
-  try {
-    await page.click('[class*="next-week"]', { timeout: 2000 });
-    return 'class:next-week';
-  } catch (e) {}
-  try {
-    await page.click('button[aria-label*="iguiente"]', { timeout: 2000 });
-    return 'aria:siguiente';
-  } catch (e) {}
+  try { await page.click('button[class*="next"]', { timeout: 2000 }); return 'class:next'; } catch (e) {}
+  try { await page.click('[class*="nextWeek"]', { timeout: 2000 }); return 'class:nextWeek'; } catch (e) {}
+  try { await page.click('[class*="next-week"]', { timeout: 2000 }); return 'class:next-week'; } catch (e) {}
+  try { await page.click('button[aria-label*="iguiente"]', { timeout: 2000 }); return 'aria:siguiente'; } catch (e) {}
+  try { await page.click('button[aria-label*="ext"]', { timeout: 2000 }); return 'aria:next'; } catch (e) {}
 
-  // Buscar por texto con Playwright
   const botones = await page.$$('button');
   for (const btn of botones) {
     const txt = (await btn.innerText()).trim();
-    const cls = await btn.getAttribute('class') || '';
-    if (txt === '>' || txt === '\u203a' || txt === '\u2192' ||
+    const cls = (await btn.getAttribute('class')) || '';
+    if (txt === '>' || txt === '\u203a' || txt === '\u2192' || txt === '>>' ||
         cls.includes('next') || cls.includes('Next') || cls.includes('forward')) {
       await btn.click();
       return 'btn:' + txt + '|' + cls.slice(0, 30);
     }
   }
+
+  // Intentar con el boton "Proximo X" que aparece al pie del calendario
+  try {
+    await page.click('button:has-text("Pr")', { timeout: 2000 });
+    return 'btn:Proximo';
+  } catch (e) {}
+
   return null;
 }
 
@@ -191,7 +185,6 @@ async function main() {
     await page.waitForTimeout(3000);
     console.log('Login exitoso');
 
-    // Cargar perfil
     await page.goto(CONFIG.perfilUrl, { waitUntil: 'networkidle' });
     await page.waitForTimeout(8000);
 
@@ -222,31 +215,22 @@ async function main() {
       return;
     }
 
-    // Navegar a Horarios haciendo CLIC en el menu (no goto)
-    // Esto permite que el Service Worker funcione normalmente
-    console.log('Navegando a Horarios via clic en menu...');
-    try {
-      await page.click('a[href*="horarios"], text=Horarios', { timeout: 5000 });
-    } catch (e) {
-      // Si falla el clic, intentar con goto
-      console.log('Clic en menu fallo, usando goto...');
-      await page.goto('https://members.boxmagic.app/g/oGDPQaGLb5/horarios', { waitUntil: 'networkidle' });
-    }
+    // Navegar a horarios con la URL correcta
+    console.log('Navegando a horarios...');
+    await page.goto(CONFIG.horariosUrl, { waitUntil: 'networkidle' });
     await page.waitForTimeout(8000);
 
-    // Debug inicial
     const debugInfo = await page.evaluate(function() {
       return {
         title: document.title,
         url: window.location.href,
         links: document.querySelectorAll('a[href*="instanciaID"]').length,
         botones: document.querySelectorAll('button').length,
-        textoVisible: (document.body.innerText || '').slice(0, 300),
+        texto: (document.body.innerText || '').slice(0, 300).replace(/\n/g, '|'),
       };
     });
-    console.log('Horarios - title: ' + debugInfo.title + ' | url: ' + debugInfo.url);
-    console.log('Horarios - links: ' + debugInfo.links + ' | botones: ' + debugInfo.botones);
-    console.log('Horarios - texto: ' + debugInfo.textoVisible.replace(/\n/g, '|').slice(0, 200));
+    console.log('Horarios - title: ' + debugInfo.title + ' | links: ' + debugInfo.links + ' | botones: ' + debugInfo.botones);
+    console.log('Horarios - texto: ' + debugInfo.texto.slice(0, 200));
 
     const disponibilidad = {};
     const maxSemanas = 8;
@@ -259,7 +243,7 @@ async function main() {
       for (const key of Object.keys(dispSemana)) {
         if (!disponibilidad[key]) {
           disponibilidad[key] = dispSemana[key];
-          console.log('  ' + key.slice(0, 50) + ' | lleno:' + dispSemana[key].capacidadCompleta + ' ' + dispSemana[key].participantes + '/' + dispSemana[key].cuposMax);
+          console.log('  ' + key.slice(0, 50) + ' lleno:' + dispSemana[key].capacidadCompleta + ' ' + dispSemana[key].participantes + '/' + dispSemana[key].cuposMax);
         }
       }
 
@@ -278,16 +262,15 @@ async function main() {
 
       const resultado = await avanzarSemana(page);
       if (!resultado) {
-        // Log todos los botones para debug
         const btnTexts = await page.$$eval('button', function(btns) {
           return btns.map(function(b) {
-            return (b.className || '').slice(0, 30) + '|' + (b.innerText || '').slice(0, 15);
+            return (b.className || '').slice(0, 30) + '|' + (b.innerText || '').slice(0, 20);
           });
         });
-        console.log('Sin boton siguiente. Botones (' + btnTexts.length + '): ' + btnTexts.slice(0, 10).join(' || '));
+        console.log('Sin boton siguiente. Botones: ' + btnTexts.slice(0, 15).join(' || '));
         break;
       }
-      console.log('Avanzando semana: ' + resultado);
+      console.log('Avanzando: ' + resultado);
       await page.waitForTimeout(5000);
     }
 
