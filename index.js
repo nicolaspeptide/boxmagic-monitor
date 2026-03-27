@@ -12,8 +12,16 @@ const CONFIG = {
 // Revisión cada 15 minutos
 const INTERVALO_MS = 15 * 60 * 1000;
 
-// Anti-spam: no volver a notificar si el mensaje es idéntico al anterior
-let ultimoMensaje = null;
+// Anti-spam persistente: sobrevive reinicios de Railway
+const ESTADO_FILE = '/tmp/boxmagic_ultimo_estado.txt';
+const fs = require('fs');
+
+function leerUltimoMensaje() {
+  try { return fs.readFileSync(ESTADO_FILE, 'utf8'); } catch(e) { return null; }
+}
+function guardarUltimoMensaje(msg) {
+  try { fs.writeFileSync(ESTADO_FILE, msg, 'utf8'); } catch(e) {}
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fecha/hora actual en Chile (UTC-3)
@@ -104,12 +112,16 @@ async function revisar() {
     // reservasNoAsignadas = cupos comprados que aún no tienen clase asignada.
     // Son los cupos que Nicolás puede usar para reservar.
     // Contamos TODAS porque son del plan activo (el gimnasio solo muestra las vigentes).
-    const cuposSinAgendar = Object.keys(perfil.reservasNoAsignadas || {}).length;
+    // Filtrar solo RNA del año en curso (las de 2024 son períodos vencidos)
+    const anoActual = ahoraChile().getFullYear();
+    const cuposSinAgendar = Object.values(perfil.reservasNoAsignadas || {})
+      .filter(r => new Date(r.creacion || r.actualizacion || 0).getFullYear() >= anoActual)
+      .length;
     console.log(`🎯 Cupos sin agendar: ${cuposSinAgendar}`);
 
     if (cuposSinAgendar === 0) {
       console.log('✅ Sin cupos disponibles — nada que notificar');
-      ultimoMensaje = null; // resetear para próximo ciclo con cupos
+      guardarUltimoMensaje(''); // resetear para notificar cuando vuelvan cupos
       return;
     }
 
@@ -163,12 +175,12 @@ async function revisar() {
       `Próximas clases disponibles:\n${proximas.slice(0, 8).join('\n')}\n\n` +
       `Reserva: ${CONFIG.horarioUrl}`;
 
-    if (mensaje === ultimoMensaje) {
+    if (mensaje === leerUltimoMensaje()) {
       console.log('ℹ️  Sin cambios — no se reenvía WhatsApp');
       return;
     }
 
-    ultimoMensaje = mensaje;
+    guardarUltimoMensaje(mensaje);
 
     const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
     await client.messages.create({
