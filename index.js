@@ -5,7 +5,6 @@ const fs = require('fs');
 const CONFIG = {
   loginUrl:   'https://members.boxmagic.app/a/g?o=pi-e',
   perfilUrl:  'https://members.boxmagic.app/g/oGDPQaGLb5/perfil',
-  horariosUrl:'https://members.boxmagic.app/g/oGDPQaGLb5/horarios',
   email:      process.env.BOXMAGIC_EMAIL,
   password:   process.env.BOXMAGIC_PASSWORD,
 };
@@ -115,7 +114,6 @@ async function leerDisponibilidadDOM(page) {
             if (partMatch[2]) cuposMax = parseInt(partMatch[2]);
           }
           resultado[instanciaID] = {
-            instanciaID: instanciaID,
             participantes: participantes,
             cuposMax: cuposMax,
             capacidadCompleta: capacidadCompleta,
@@ -128,34 +126,37 @@ async function leerDisponibilidadDOM(page) {
 }
 
 async function avanzarSemana(page) {
-  return await page.evaluate(function() {
-    var selectores = [
-      'button[class*="next"]',
-      'button[aria-label*="siguiente"]',
-      'button[aria-label*="next"]',
-      'button[aria-label*="Siguiente"]',
-      '[class*="next-week"]',
-      '[class*="nextWeek"]',
-    ];
-    for (var i = 0; i < selectores.length; i++) {
-      var btn = document.querySelector(selectores[i]);
-      if (btn) { btn.click(); return 'selector:' + selectores[i]; }
+  // Usar click de Playwright (no page.evaluate) para evitar problemas de selectores
+  try {
+    // Intentar con selector Playwright nativo
+    await page.click('button[class*="next"]', { timeout: 2000 });
+    return 'class:next';
+  } catch (e) {}
+  try {
+    await page.click('[class*="nextWeek"]', { timeout: 2000 });
+    return 'class:nextWeek';
+  } catch (e) {}
+  try {
+    await page.click('[class*="next-week"]', { timeout: 2000 });
+    return 'class:next-week';
+  } catch (e) {}
+  try {
+    await page.click('button[aria-label*="iguiente"]', { timeout: 2000 });
+    return 'aria:siguiente';
+  } catch (e) {}
+
+  // Buscar por texto con Playwright
+  const botones = await page.$$('button');
+  for (const btn of botones) {
+    const txt = (await btn.innerText()).trim();
+    const cls = await btn.getAttribute('class') || '';
+    if (txt === '>' || txt === '\u203a' || txt === '\u2192' ||
+        cls.includes('next') || cls.includes('Next') || cls.includes('forward')) {
+      await btn.click();
+      return 'btn:' + txt + '|' + cls.slice(0, 30);
     }
-    var botones = document.querySelectorAll('button');
-    var encontrado = null;
-    botones.forEach(function(b) {
-      if (encontrado) return;
-      var txt = (b.innerText || b.textContent || '').trim();
-      var cls = b.className || '';
-      if (txt === '>' || txt === '\u203a' || txt === '\u2192' || txt === '>>' ||
-          cls.includes('next') || cls.includes('Next') ||
-          cls.includes('forward') || cls.includes('right')) {
-        encontrado = b;
-      }
-    });
-    if (encontrado) { encontrado.click(); return 'texto:' + (encontrado.innerText || encontrado.className).slice(0, 30); }
-    return null;
-  });
+  }
+  return null;
 }
 
 async function main() {
@@ -163,7 +164,6 @@ async function main() {
   limpiarAvisosViejos();
 
   const browser = await chromium.launch({ args: ['--no-sandbox'] });
-  // Sin bloquear service worker para que la app cargue correctamente
   const context = await browser.newContext();
   const page = await context.newPage();
 
@@ -191,6 +191,7 @@ async function main() {
     await page.waitForTimeout(3000);
     console.log('Login exitoso');
 
+    // Cargar perfil
     await page.goto(CONFIG.perfilUrl, { waitUntil: 'networkidle' });
     await page.waitForTimeout(8000);
 
@@ -221,23 +222,31 @@ async function main() {
       return;
     }
 
-    // Ir a horarios
-    await page.goto(CONFIG.horariosUrl, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(6000);
+    // Navegar a Horarios haciendo CLIC en el menu (no goto)
+    // Esto permite que el Service Worker funcione normalmente
+    console.log('Navegando a Horarios via clic en menu...');
+    try {
+      await page.click('a[href*="horarios"], text=Horarios', { timeout: 5000 });
+    } catch (e) {
+      // Si falla el clic, intentar con goto
+      console.log('Clic en menu fallo, usando goto...');
+      await page.goto('https://members.boxmagic.app/g/oGDPQaGLb5/horarios', { waitUntil: 'networkidle' });
+    }
+    await page.waitForTimeout(8000);
 
-    // Debug: ver que hay en el DOM
+    // Debug inicial
     const debugInfo = await page.evaluate(function() {
       return {
         title: document.title,
+        url: window.location.href,
         links: document.querySelectorAll('a[href*="instanciaID"]').length,
         botones: document.querySelectorAll('button').length,
-        htmlSnippet: document.body.innerHTML.slice(0, 800),
+        textoVisible: (document.body.innerText || '').slice(0, 300),
       };
     });
-    console.log('DOM debug - title: ' + debugInfo.title);
-    console.log('DOM debug - links instanciaID: ' + debugInfo.links);
-    console.log('DOM debug - botones: ' + debugInfo.botones);
-    console.log('DOM debug - html: ' + debugInfo.htmlSnippet.replace(/\n/g, ' ').slice(0, 400));
+    console.log('Horarios - title: ' + debugInfo.title + ' | url: ' + debugInfo.url);
+    console.log('Horarios - links: ' + debugInfo.links + ' | botones: ' + debugInfo.botones);
+    console.log('Horarios - texto: ' + debugInfo.textoVisible.replace(/\n/g, '|').slice(0, 200));
 
     const disponibilidad = {};
     const maxSemanas = 8;
@@ -245,22 +254,21 @@ async function main() {
     for (var semana = 0; semana < maxSemanas; semana++) {
       const dispSemana = await leerDisponibilidadDOM(page);
       const count = Object.keys(dispSemana).length;
-      console.log('Semana ' + (semana + 1) + ': ' + count + ' instancias en DOM');
+      console.log('Semana ' + (semana + 1) + ': ' + count + ' instancias');
 
       for (const key of Object.keys(dispSemana)) {
-        disponibilidad[key] = dispSemana[key];
-        console.log('  ' + key.slice(0, 50) + ' | lleno:' + dispSemana[key].capacidadCompleta + ' part:' + dispSemana[key].participantes + '/' + dispSemana[key].cuposMax);
+        if (!disponibilidad[key]) {
+          disponibilidad[key] = dispSemana[key];
+          console.log('  ' + key.slice(0, 50) + ' | lleno:' + dispSemana[key].capacidadCompleta + ' ' + dispSemana[key].participantes + '/' + dispSemana[key].cuposMax);
+        }
       }
 
       const fechaMaxPendiente = fechasPendientesPorSlot
-        .flatMap(function(i) { return i.fechas; })
-        .sort().pop();
-
+        .flatMap(function(i) { return i.fechas; }).sort().pop();
       const fechasEnDOM = Object.keys(disponibilidad)
         .map(function(k) { const m = k.match(/i(\d{4}-\d{2}-\d{2})/); return m ? m[1] : null; })
         .filter(Boolean).sort();
       const fechaMaxDOM = fechasEnDOM[fechasEnDOM.length - 1] || '';
-
       console.log('Max pendiente: ' + fechaMaxPendiente + ' | max DOM: ' + fechaMaxDOM);
 
       if (fechaMaxDOM >= fechaMaxPendiente && semana > 0) {
@@ -270,18 +278,16 @@ async function main() {
 
       const resultado = await avanzarSemana(page);
       if (!resultado) {
-        const btnInfo = await page.evaluate(function() {
-          var bs = document.querySelectorAll('button');
-          var info = [];
-          bs.forEach(function(b) {
-            info.push((b.className || '').slice(0, 40) + '|' + (b.innerText || '').slice(0, 15));
+        // Log todos los botones para debug
+        const btnTexts = await page.$$eval('button', function(btns) {
+          return btns.map(function(b) {
+            return (b.className || '').slice(0, 30) + '|' + (b.innerText || '').slice(0, 15);
           });
-          return info.slice(0, 20).join(' || ');
         });
-        console.log('Sin boton siguiente. Botones: ' + btnInfo);
+        console.log('Sin boton siguiente. Botones (' + btnTexts.length + '): ' + btnTexts.slice(0, 10).join(' || '));
         break;
       }
-      console.log('Avanzando: ' + resultado);
+      console.log('Avanzando semana: ' + resultado);
       await page.waitForTimeout(5000);
     }
 
