@@ -71,18 +71,9 @@ async function getPlanActivo(page) {
 
           if (data.perfilEnGimnasio?.membresias) {
             const perfil = data.perfilEnGimnasio;
-
-            // DEBUG: ver todas las keys del perfil para encontrar donde están los cupos
-            console.log('📦 Keys de perfilEnGimnasio:', JSON.stringify(Object.keys(perfil)));
-
-            // Ver si hay periodos, cupos, resumen, etc.
-            if (perfil.periodos) console.log('   periodos keys:', JSON.stringify(Object.keys(perfil.periodos)).substring(0, 200));
-            if (perfil.cupos) console.log('   cupos:', JSON.stringify(perfil.cupos).substring(0, 200));
-            if (perfil.resumen) console.log('   resumen:', JSON.stringify(perfil.resumen).substring(0, 200));
-            if (perfil.estadoCupos) console.log('   estadoCupos:', JSON.stringify(perfil.estadoCupos).substring(0, 200));
-
             const membresias = perfil.membresias;
             const reservas = perfil.reservas || {};
+            const reservasNoAsignadas = perfil.reservasNoAsignadas || {};
 
             for (const key in membresias) {
               const m = membresias[key];
@@ -95,37 +86,30 @@ async function getPlanActivo(page) {
               const membresiaID = m.membresiaID || key;
               const nombre = m.planNombre || m.nombre || m.plan || 'Plan desconocido';
 
-              // Reservas para fechasReservadas
-              const reservasDelPlan = Object.values(reservas).filter(r =>
+              // Reservas agendadas (con fecha asignada) de esta membresía
+              const reservasAgendadas = Object.values(reservas).filter(r =>
                 r.membresiaID === membresiaID
               );
 
+              // Reservas sin fecha asignada (cupos comprados pero no agendados aún)
+              const sinAsignar = Object.values(reservasNoAsignadas).filter(r =>
+                r.membresiaID === membresiaID
+              );
+
+              console.log(`📊 reservasAgendadas: ${reservasAgendadas.length}, sinAsignar: ${sinAsignar.length}`);
+
+              // Los cupos "sin agendar" son los disponibles para reservar
+              const cuposDisponibles = sinAsignar.length;
+
+              // Fechas ya reservadas (para no revisarlas)
               const fechasReservadas = new Set(
-                reservasDelPlan.map(r => {
+                reservasAgendadas.map(r => {
                   const fechaInicio = new Date(r.fechaInicio);
                   const utc = fechaInicio.getTime() + fechaInicio.getTimezoneOffset() * 60000;
                   const fechaChile = new Date(utc + (-3 * 60) * 60000);
                   return `${r.fechaYMD}-${fechaChile.getHours()}`;
                 })
               );
-
-              // Buscar cupos en periodos si existen
-              let cuposDisponibles = 1; // fallback seguro
-              if (perfil.periodos) {
-                for (const pKey in perfil.periodos) {
-                  const p = perfil.periodos[pKey];
-                  if (p.membresiaID === membresiaID) {
-                    console.log('   Periodo keys:', JSON.stringify(Object.keys(p)));
-                    cuposDisponibles =
-                      p.cuposSinAgendar ??
-                      p.cuposDisponibles ??
-                      p.cuposRestantes ??
-                      (p.cuposMaxMes != null ? p.cuposMaxMes - (p.cuposAgendados || 0) - (p.cuposDescontados || 0) : 1);
-                    console.log(`   Cupos desde periodo: ${cuposDisponibles}`);
-                    break;
-                  }
-                }
-              }
 
               planData = {
                 membresiaID,
@@ -137,7 +121,7 @@ async function getPlanActivo(page) {
 
               console.log(`📋 Plan: ${nombre}`);
               console.log(`📅 Vigente hasta: ${finVigencia.toLocaleDateString('es-CL')}`);
-              console.log(`🎯 Cupos disponibles: ${cuposDisponibles}`);
+              console.log(`🎯 Cupos disponibles (sin agendar): ${cuposDisponibles}`);
               break;
             }
           }
@@ -158,59 +142,65 @@ async function getPlanActivo(page) {
 async function checkSlot(page, { diaNombre, fechaYMD, hora, claseID, horarioID }) {
   return new Promise(async (resolve) => {
     let resultado = null;
+    const respuestasCapturadas = [];
 
     const handler = async (response) => {
-      const url = response.url();
       try {
         const contentType = response.headers()['content-type'] || '';
         if (!contentType.includes('application/json')) return;
-
         const data = await response.json();
-        const keys = Object.keys(data);
-
-        // DEBUG: ver qué respuestas llegan al navegar al slot
-        if (keys.length > 0 && (url.includes('boxmagic') || url.includes('parse'))) {
-          console.log(`   📡 checkSlot response: ${url.split('/').slice(-2).join('/')} keys=${JSON.stringify(keys)}`);
-        }
-
-        if (data.instancias) {
-          const instKeys = Object.keys(data.instancias);
-          console.log(`   instancias encontradas: ${instKeys.length}`);
-
-          for (const key in data.instancias) {
-            const inst = data.instancias[key];
-
-            const fechaInicio = new Date(inst.fechaInicio);
-            const utc = fechaInicio.getTime() + fechaInicio.getTimezoneOffset() * 60000;
-            const fechaChile = new Date(utc + (-3 * 60) * 60000);
-            const horaClase = fechaChile.getHours();
-            const fechaClase = fechaChile.toISOString().split('T')[0];
-
-            console.log(`   inst ${key}: fecha=${fechaClase} hora=${horaClase} (buscando ${fechaYMD} ${hora})`);
-
-            if (horaClase !== hora || fechaClase !== fechaYMD) continue;
-
-            const yaReservado = data.participantes && data.participantes[CONFIG.usuarioID];
-            if (yaReservado) {
-              console.log(`⏭️  ${diaNombre} ${fechaYMD} ${hora}:00hrs → Ya reservado`);
-              resultado = { reservado: true };
-              continue;
-            }
-
-            const espacios = inst.espaciosDisponibles;
-            console.log(`🔍 ${diaNombre} ${fechaYMD} ${hora}:00hrs → ${espacios} espacio(s)`);
-            resultado = { reservado: false, espacios };
-          }
-        }
+        respuestasCapturadas.push({ url: response.url(), data });
       } catch(e) {}
     };
 
     page.on('response', handler);
     const url = `${CONFIG.boxmagicUrl}?instanciaID=i${fechaYMD}>${claseID}>${horarioID}`;
-    console.log(`🌐 Navegando a slot: ${diaNombre} ${fechaYMD} ${hora}h`);
     await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(3000);
     page.off('response', handler);
+
+    // Buscar instancias en CUALQUIER respuesta capturada
+    for (const { url: rUrl, data } of respuestasCapturadas) {
+      if (data.instancias) {
+        console.log(`   ✅ instancias en: ${rUrl.split('/').slice(-2).join('/')}`);
+        for (const key in data.instancias) {
+          const inst = data.instancias[key];
+
+          const fechaInicio = new Date(inst.fechaInicio);
+          const utc = fechaInicio.getTime() + fechaInicio.getTimezoneOffset() * 60000;
+          const fechaChile = new Date(utc + (-3 * 60) * 60000);
+          const horaClase = fechaChile.getHours();
+          const fechaClase = fechaChile.toISOString().split('T')[0];
+
+          if (horaClase !== hora || fechaClase !== fechaYMD) continue;
+
+          const yaReservado = data.participantes && data.participantes[CONFIG.usuarioID];
+          if (yaReservado) {
+            console.log(`⏭️  ${diaNombre} ${fechaYMD} ${hora}:00hrs → Ya reservado`);
+            resultado = { reservado: true };
+            continue;
+          }
+
+          const espacios = inst.espaciosDisponibles;
+          console.log(`🔍 ${diaNombre} ${fechaYMD} ${hora}:00hrs → ${espacios} espacio(s)`);
+          resultado = { reservado: false, espacios };
+        }
+        break;
+      }
+
+      // Buscar también en 'horarios' u otras estructuras que contenga instancias
+      if (data.horarios) {
+        console.log(`   📦 Encontrado 'horarios' en: ${rUrl.split('/').slice(-2).join('/')}`);
+        console.log(`   Keys de horarios:`, JSON.stringify(Object.keys(data.horarios)).substring(0, 200));
+      }
+    }
+
+    // Si no encontramos instancias, loguear qué llegó para debug
+    if (!resultado) {
+      const urlsCapturadas = respuestasCapturadas.map(r => r.url.split('/').slice(-2).join('/')).join(', ');
+      console.log(`   ⚠️  Sin instancias. URLs capturadas: ${urlsCapturadas || 'ninguna'}`);
+    }
+
     resolve(resultado);
   });
 }
