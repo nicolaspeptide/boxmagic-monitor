@@ -75,6 +75,13 @@ async function getPlanActivo(page) {
             const reservas = perfil.reservas || {};
             const reservasNoAsignadas = perfil.reservasNoAsignadas || {};
 
+            // Debug: ver estructura de reservasNoAsignadas
+            const rnaTodos = Object.values(reservasNoAsignadas);
+            console.log(`📦 reservasNoAsignadas total: ${rnaTodos.length}`);
+            if (rnaTodos.length > 0) {
+              console.log('   primera:', JSON.stringify(rnaTodos[0]).substring(0, 200));
+            }
+
             for (const key in membresias) {
               const m = membresias[key];
               if (!m.activa) continue;
@@ -86,22 +93,11 @@ async function getPlanActivo(page) {
               const membresiaID = m.membresiaID || key;
               const nombre = m.planNombre || m.nombre || m.plan || 'Plan desconocido';
 
-              // Reservas agendadas (con fecha asignada) de esta membresía
+              // Reservas agendadas de esta membresía → para saber qué fechas ya están cubiertas
               const reservasAgendadas = Object.values(reservas).filter(r =>
                 r.membresiaID === membresiaID
               );
 
-              // Reservas sin fecha asignada (cupos comprados pero no agendados aún)
-              const sinAsignar = Object.values(reservasNoAsignadas).filter(r =>
-                r.membresiaID === membresiaID
-              );
-
-              console.log(`📊 reservasAgendadas: ${reservasAgendadas.length}, sinAsignar: ${sinAsignar.length}`);
-
-              // Los cupos "sin agendar" son los disponibles para reservar
-              const cuposDisponibles = sinAsignar.length;
-
-              // Fechas ya reservadas (para no revisarlas)
               const fechasReservadas = new Set(
                 reservasAgendadas.map(r => {
                   const fechaInicio = new Date(r.fechaInicio);
@@ -110,6 +106,15 @@ async function getPlanActivo(page) {
                   return `${r.fechaYMD}-${fechaChile.getHours()}`;
                 })
               );
+
+              // Cupos sin agendar: todas las reservasNoAsignadas (son los cupos libres del plan activo)
+              // Si hay múltiples membresías activas, filtrar por membresiaID si el campo existe
+              const sinAsignarFiltradas = rnaTodos.filter(r =>
+                !r.membresiaID || r.membresiaID === membresiaID
+              );
+              const cuposDisponibles = sinAsignarFiltradas.length > 0
+                ? sinAsignarFiltradas.length
+                : rnaTodos.length; // fallback: usar todas si el filtro da 0
 
               planData = {
                 membresiaID,
@@ -121,7 +126,7 @@ async function getPlanActivo(page) {
 
               console.log(`📋 Plan: ${nombre}`);
               console.log(`📅 Vigente hasta: ${finVigencia.toLocaleDateString('es-CL')}`);
-              console.log(`🎯 Cupos disponibles (sin agendar): ${cuposDisponibles}`);
+              console.log(`🎯 Cupos sin agendar: ${cuposDisponibles}`);
               break;
             }
           }
@@ -159,10 +164,9 @@ async function checkSlot(page, { diaNombre, fechaYMD, hora, claseID, horarioID }
     await page.waitForTimeout(3000);
     page.off('response', handler);
 
-    // Buscar instancias en CUALQUIER respuesta capturada
+    // Buscar instancias en cualquier respuesta capturada
     for (const { url: rUrl, data } of respuestasCapturadas) {
       if (data.instancias) {
-        console.log(`   ✅ instancias en: ${rUrl.split('/').slice(-2).join('/')}`);
         for (const key in data.instancias) {
           const inst = data.instancias[key];
 
@@ -188,17 +192,43 @@ async function checkSlot(page, { diaNombre, fechaYMD, hora, claseID, horarioID }
         break;
       }
 
-      // Buscar también en 'horarios' u otras estructuras que contenga instancias
+      // BoxMagic puede usar 'horarios' en vez de 'instancias'
       if (data.horarios) {
-        console.log(`   📦 Encontrado 'horarios' en: ${rUrl.split('/').slice(-2).join('/')}`);
-        console.log(`   Keys de horarios:`, JSON.stringify(Object.keys(data.horarios)).substring(0, 200));
+        console.log(`   📦 'horarios' en respuesta — keys:`, JSON.stringify(Object.keys(data.horarios)).substring(0, 150));
+        // Intentar buscar la instancia dentro de horarios
+        for (const hKey in data.horarios) {
+          const h = data.horarios[hKey];
+          if (!h.instancias) continue;
+          for (const iKey in h.instancias) {
+            const inst = h.instancias[iKey];
+            const fechaInicio = new Date(inst.fechaInicio);
+            const utc = fechaInicio.getTime() + fechaInicio.getTimezoneOffset() * 60000;
+            const fechaChile = new Date(utc + (-3 * 60) * 60000);
+            if (fechaChile.getHours() !== hora) continue;
+            if (fechaChile.toISOString().split('T')[0] !== fechaYMD) continue;
+
+            const yaReservado = inst.participantes && inst.participantes[CONFIG.usuarioID];
+            if (yaReservado) {
+              resultado = { reservado: true };
+              continue;
+            }
+            const espacios = inst.espaciosDisponibles;
+            console.log(`🔍 ${diaNombre} ${fechaYMD} ${hora}:00hrs → ${espacios} espacio(s)`);
+            resultado = { reservado: false, espacios };
+          }
+        }
+        if (resultado) break;
+      }
+
+      // Ver perfilEnGimnasio con info fresca de horarios
+      if (data.perfilEnGimnasio) {
+        console.log('   📦 perfilEnGimnasio en checkSlot — keys:', JSON.stringify(Object.keys(data.perfilEnGimnasio)));
       }
     }
 
-    // Si no encontramos instancias, loguear qué llegó para debug
     if (!resultado) {
-      const urlsCapturadas = respuestasCapturadas.map(r => r.url.split('/').slice(-2).join('/')).join(', ');
-      console.log(`   ⚠️  Sin instancias. URLs capturadas: ${urlsCapturadas || 'ninguna'}`);
+      const urlsCapturadas = respuestasCapturadas.map(r => r.url.split('/').slice(-2).join('/')).join(' | ');
+      console.log(`   ⚠️  Sin instancias. Respuestas: ${urlsCapturadas || 'ninguna'}`);
     }
 
     resolve(resultado);
