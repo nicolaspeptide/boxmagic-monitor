@@ -17,24 +17,49 @@ const TWILIO = {
   from:  'whatsapp:+14155238886',
 };
 
-const ANTI_SPAM_FILE = '/app/ultimo_aviso.txt';
+// Horarios fijos que quieres asistir
+const SLOTS = [
+  { dia: 1, hora: '19:00', nombre: 'Lunes 19h',     claseID: 'Vd0jxy2Lrx', horarioID: 'Kp0Myj6E08' },
+  { dia: 1, hora: '20:00', nombre: 'Lunes 20h',     claseID: 'gjLKb2rDRe', horarioID: '6XD9krv342' },
+  { dia: 2, hora: '19:00', nombre: 'Martes 19h',    claseID: 'wa0eq7P0v6', horarioID: 'gjLK569Q0R' },
+  { dia: 2, hora: '20:00', nombre: 'Martes 20h',    claseID: '8VLZORg4za', horarioID: 'WkD16ZV3L3' },
+  { dia: 3, hora: '20:00', nombre: 'Miércoles 20h', claseID: 'gjLKb2rDRe', horarioID: '8k0zNyjx0n' },
+  { dia: 5, hora: '19:00', nombre: 'Viernes 19h',   claseID: 'ep4QnlK0aQ', horarioID: 'j80pX8AY0W' },
+];
+
+const ANTI_SPAM_FILE = '/app/avisos_enviados.json';
 
 // ─── ANTI-SPAM ────────────────────────────────────────────────────────────────
-function yaAvisadoHoy() {
+// Guarda qué clases ya fueron avisadas (por fecha+horarioID)
+function cargarAvisos() {
   try {
-    const contenido = fs.readFileSync(ANTI_SPAM_FILE, 'utf8').trim();
-    return contenido === new Date().toISOString().slice(0, 10);
+    return JSON.parse(fs.readFileSync(ANTI_SPAM_FILE, 'utf8'));
   } catch {
-    return false;
+    return {};
   }
 }
 
-function marcarAvisadoHoy() {
-  fs.writeFileSync(ANTI_SPAM_FILE, new Date().toISOString().slice(0, 10), 'utf8');
+function yaAvisado(key) {
+  const avisos = cargarAvisos();
+  return !!avisos[key];
 }
 
-function resetearAntiSpam() {
-  try { fs.unlinkSync(ANTI_SPAM_FILE); } catch {}
+function marcarAvisado(key) {
+  const avisos = cargarAvisos();
+  avisos[key] = new Date().toISOString();
+  fs.writeFileSync(ANTI_SPAM_FILE, JSON.stringify(avisos), 'utf8');
+}
+
+// Limpiar avisos de fechas pasadas
+function limpiarAvisosViejos() {
+  const avisos = cargarAvisos();
+  const hoy = new Date().toISOString().slice(0, 10);
+  const limpios = {};
+  for (const [key, val] of Object.entries(avisos)) {
+    const fecha = key.split('_')[0];
+    if (fecha >= hoy) limpios[key] = val;
+  }
+  fs.writeFileSync(ANTI_SPAM_FILE, JSON.stringify(limpios), 'utf8');
 }
 
 // ─── WHATSAPP ─────────────────────────────────────────────────────────────────
@@ -58,7 +83,7 @@ async function obtenerPerfil() {
         const json = await response.json();
         if (json?.perfilEnGimnasio) {
           perfilData = json.perfilEnGimnasio;
-          console.log('📦 Perfil interceptado desde:', response.url());
+          console.log('📦 Perfil interceptado');
         }
       }
     } catch {}
@@ -82,79 +107,65 @@ async function obtenerPerfil() {
   return perfilData;
 }
 
-// ─── LÓGICA DE CUPOS ──────────────────────────────────────────────────────────
-function calcularCupos(perfil) {
+// ─── LÓGICA PRINCIPAL ─────────────────────────────────────────────────────────
+function obtenerFechasDelPeriodo(perfil) {
   const ahora = new Date();
 
-  // 1. Membresía activa
   const membresiaActiva = Object.values(perfil.membresias || {}).find(
     m => m.activa && new Date(m.finVigencia) > ahora
   );
-  if (!membresiaActiva) {
-    console.log('⚠️  No hay membresía activa');
-    return null;
-  }
-  console.log(`📋 Plan: ${membresiaActiva.planNombre} | Vigente hasta: ${membresiaActiva.finVigencia?.slice(0,10)}`);
+  if (!membresiaActiva) return null;
 
-  // 2. Total de cupos del plan (desde el nombre, ej: "16 Sesiones al Mes 3 a 1")
-  const match = membresiaActiva.planNombre?.match(/(\d+)\s*Sesion/i);
-  const totalCuposPlan = match ? parseInt(match[1]) : null;
+  const finVigencia = new Date(membresiaActiva.finVigencia);
 
-  // 3. Pago vigente (el que cubre hoy)
-  const pagos = Object.values(membresiaActiva.pagos || {});
-  let pagoVigente = pagos.find(p =>
-    ahora >= new Date(p.inicioVigencia) && ahora <= new Date(p.finVigencia)
-  );
-  if (!pagoVigente) {
-    pagoVigente = pagos.sort((a, b) => new Date(b.inicioVigencia) - new Date(a.inicioVigencia))[0];
-    console.log('⚠️  Usando pago más reciente como fallback');
-  }
-  if (!pagoVigente) {
-    console.log('⚠️  No se encontró pago');
-    return null;
+  // Recopilar todas las reservas ya agendadas en el período activo
+  const reservasAgendadas = new Set();
+  for (const pago of Object.values(membresiaActiva.pagos || {})) {
+    for (const periodo of Object.values(pago.periodosDeCupos || {})) {
+      for (const reserva of Object.values(periodo.reservas || {})) {
+        // key: fechaYMD_horarioID
+        reservasAgendadas.add(`${reserva.fechaYMD}_${reserva.horarioID}`);
+      }
+    }
   }
 
-  // 4. Período de cupos vigente
-  const periodos = Object.values(pagoVigente.periodosDeCupos || {});
-  let periodoActual = periodos.find(p =>
-    ahora >= new Date(p.fechaInicio) && ahora <= new Date(p.fechaFin)
-  );
-  if (!periodoActual) {
-    periodoActual = periodos.sort((a, b) => new Date(b.fechaInicio) - new Date(a.fechaInicio))[0];
-    console.log('⚠️  Usando período más reciente como fallback');
+  console.log(`📋 Plan vigente hasta: ${finVigencia.toISOString().slice(0,10)}`);
+  console.log(`📅 Reservas ya agendadas: ${reservasAgendadas.size}`);
+
+  return { finVigencia, reservasAgendadas };
+}
+
+function obtenerProximasFechasParaSlot(slot, finVigencia) {
+  // Devuelve todas las fechas futuras donde cae ese día de semana
+  // dentro del período del plan
+  const fechas = [];
+  const ahora = new Date();
+  const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+
+  // Empezar desde mañana (si ya pasó la hora de hoy) o desde hoy
+  const inicio = new Date(hoy);
+
+  for (let d = new Date(inicio); d <= finVigencia; d.setDate(d.getDate() + 1)) {
+    // getDay(): 0=domingo, 1=lunes... 5=viernes, 6=sábado
+    if (d.getDay() === slot.dia) {
+      // Verificar que la clase no haya pasado ya hoy
+      const [h, m] = slot.hora.split(':').map(Number);
+      const fechaClase = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m);
+      if (fechaClase > ahora) {
+        fechas.push(d.toISOString().slice(0, 10));
+      }
+    }
   }
-  if (!periodoActual) {
-    console.log('⚠️  No se encontró período de cupos');
-    return null;
-  }
-  console.log(`📅 Período activo: ${periodoActual.periodoID}`);
-
-  // 5. Calcular cupos
-  const reservasHechas  = periodoActual.stats?.reservas    ?? Object.keys(periodoActual.reservas || {}).length;
-  const cuposUsados     = periodoActual.stats?.cuposUsados ?? 0;
-  const cuposSinAgendar = totalCuposPlan !== null ? totalCuposPlan - reservasHechas : null;
-  const reservasFuturas = Object.values(periodoActual.reservas || {}).filter(
-    r => new Date(r.fechaInicio) > ahora
-  ).length;
-
-  console.log(`📊 Total: ${totalCuposPlan} | Hechas: ${reservasHechas} | Usadas: ${cuposUsados} | Futuras: ${reservasFuturas} | Sin agendar: ${cuposSinAgendar}`);
-
-  return {
-    planNombre: membresiaActiva.planNombre,
-    finVigencia: membresiaActiva.finVigencia,
-    periodoID: periodoActual.periodoID,
-    totalCuposPlan,
-    reservasHechas,
-    cuposUsados,
-    cuposSinAgendar,
-    reservasFuturas,
-  };
+  return fechas;
 }
 
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`\n⏰ ${new Date().toLocaleString('es-CL')} — Iniciando revisión...`);
 
+  limpiarAvisosViejos();
+
+  // 1. Obtener perfil
   let perfil;
   try {
     perfil = await obtenerPerfil();
@@ -167,50 +178,85 @@ async function main() {
     return;
   }
 
-  const cupos = calcularCupos(perfil);
-  if (!cupos) {
-    console.log('❌ No se pudo calcular cupos');
+  // 2. Obtener datos del período
+  const datos = obtenerFechasDelPeriodo(perfil);
+  if (!datos) {
+    console.log('⚠️  No hay membresía activa');
     return;
   }
 
-  const sinAgendar = cupos.cuposSinAgendar;
+  const { finVigencia, reservasAgendadas } = datos;
 
-  if (sinAgendar === null || sinAgendar <= 0) {
-    console.log(`✅ Cupos sin agendar: ${sinAgendar}. Todo agendado.`);
-    resetearAntiSpam();
+  // 3. Revisar cada slot en cada fecha futura del período
+  const pendientes = [];
+
+  for (const slot of SLOTS) {
+    const fechas = obtenerProximasFechasParaSlot(slot, finVigencia);
+
+    for (const fecha of fechas) {
+      const key = `${fecha}_${slot.horarioID}`;
+
+      // ¿Ya está agendado?
+      if (reservasAgendadas.has(key)) {
+        console.log(`✅ Ya agendado: ${slot.nombre} ${fecha}`);
+        continue;
+      }
+
+      // ¿Ya avisamos por este?
+      if (yaAvisado(key)) {
+        console.log(`🔕 Ya avisado: ${slot.nombre} ${fecha}`);
+        continue;
+      }
+
+      console.log(`⚠️  Pendiente: ${slot.nombre} ${fecha}`);
+      pendientes.push({ slot, fecha, key });
+    }
+  }
+
+  if (pendientes.length === 0) {
+    console.log('✅ Todo agendado o ya avisado. Sin novedades.');
     return;
   }
 
-  if (yaAvisadoHoy()) {
-    console.log(`🔕 Ya se notificó hoy — cupos sin agendar: ${sinAgendar}`);
-    return;
+  // 4. Armar mensaje WhatsApp
+  const lineas = [
+    `🏋️ *BoxMagic — Clases sin agendar*`,
+    ``,
+    `Tienes *${pendientes.length} clase${pendientes.length !== 1 ? 's' : ''} disponible${pendientes.length !== 1 ? 's' : ''}* sin reservar:`,
+    ``,
+  ];
+
+  // Agrupar por fecha para que sea más legible
+  const porFecha = {};
+  for (const { slot, fecha } of pendientes) {
+    if (!porFecha[fecha]) porFecha[fecha] = [];
+    porFecha[fecha].push(slot.nombre);
   }
 
-  const finVig = new Date(cupos.finVigencia).toLocaleDateString('es-CL', {
-    day: 'numeric', month: 'long',
-  });
+  for (const [fecha, nombres] of Object.entries(porFecha).sort()) {
+    const [anio, mes, dia] = fecha.split('-');
+    const fechaLegible = new Date(fecha + 'T12:00:00').toLocaleDateString('es-CL', {
+      weekday: 'long', day: 'numeric', month: 'long'
+    });
+    lineas.push(`📅 ${fechaLegible}`);
+    for (const nombre of nombres) {
+      lineas.push(`  • ${nombre}`);
+    }
+    lineas.push('');
+  }
 
-  const mensaje = [
-    `🏋️ *BoxMagic — Cupos disponibles*`,
-    ``,
-    `📋 Plan: ${cupos.planNombre}`,
-    `📅 Período: ${cupos.periodoID}`,
-    ``,
-    `⚠️ Tienes *${sinAgendar} cupo${sinAgendar !== 1 ? 's' : ''} sin agendar*`,
-    ``,
-    `📊 Detalle del período:`,
-    `  • Total: ${cupos.totalCuposPlan} sesiones`,
-    `  • Ya realizadas: ${cupos.cuposUsados}`,
-    `  • Próximas agendadas: ${cupos.reservasFuturas}`,
-    `  • Sin agendar: ${sinAgendar}`,
-    ``,
-    `⏰ Vigencia hasta: ${finVig}`,
-    `👉 Agenda en: members.boxmagic.app`,
-  ].join('\n');
+  lineas.push(`👉 Reserva en: members.boxmagic.app`);
+  lineas.push(`⏰ Plan vigente hasta: ${finVigencia.toLocaleDateString('es-CL', { day: 'numeric', month: 'long' })}`);
 
+  const mensaje = lineas.join('\n');
+
+  // 5. Enviar WhatsApp
   try {
     await enviarWhatsApp(mensaje);
-    marcarAvisadoHoy();
+    // Marcar todos como avisados
+    for (const { key } of pendientes) {
+      marcarAvisado(key);
+    }
   } catch (err) {
     console.error('❌ Error WhatsApp:', err.message);
   }
