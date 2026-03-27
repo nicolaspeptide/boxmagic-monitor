@@ -88,85 +88,25 @@ function obtenerReservasYVigencia(perfil) {
   return { reservasAgendadas: reservasAgendadas, finVigencia: new Date(membresiaActiva.finVigencia) };
 }
 
-// Leer disponibilidad del DOM de la pagina de horarios
 async function leerDisponibilidadDOM(page) {
   return await page.evaluate(function() {
     var resultado = {};
-
-    // Buscar todas las tarjetas de clase visibles
-    // BoxMagic muestra tarjetas con la fecha en el titulo y participantes/capacidad
-    var tarjetas = document.querySelectorAll('[class*="card"], [class*="session"], [class*="clase"], [class*="instancia"], article, .presencial');
-
-    // Si no hay tarjetas especificas, buscar por contenido
-    if (tarjetas.length === 0) {
-      tarjetas = document.querySelectorAll('div[class]');
-    }
-
-    tarjetas.forEach(function(tarjeta) {
-      var texto = tarjeta.innerText || '';
-
-      // Buscar el instanciaID en los links o atributos
-      var links = tarjeta.querySelectorAll('a[href*="instanciaID"]');
-      links.forEach(function(link) {
-        var href = link.href || '';
-        var match = href.match(/instanciaID=([^&]+)/);
-        if (match) {
-          var instanciaID = decodeURIComponent(match[1]);
-
-          // Extraer participantes
-          var partMatch = texto.match(/(\d+)\s*\/\s*(\d+)\s*Participantes/i) ||
-                          texto.match(/Participantes\s*(\d+)\/(\d+)/i) ||
-                          texto.match(/(\d+)\s*Participantes/i);
-
-          var capacidadCompleta = texto.toLowerCase().includes('capacidad completa');
-          var participantes = 0;
-          var cuposMax = 6;
-
-          if (partMatch) {
-            if (partMatch[2]) {
-              participantes = parseInt(partMatch[1]);
-              cuposMax = parseInt(partMatch[2]);
-            } else {
-              participantes = parseInt(partMatch[1]);
-            }
-          }
-
-          resultado[instanciaID] = {
-            instanciaID: instanciaID,
-            participantes: participantes,
-            cuposMax: cuposMax,
-            capacidadCompleta: capacidadCompleta,
-            textoCompleto: texto.slice(0, 200),
-          };
-        }
-      });
-
-      // Tambien buscar por href en la tarjeta misma
-      var hrefTarjeta = tarjeta.querySelector && tarjeta.querySelector('[href*="instanciaID"]');
-      if (!hrefTarjeta && tarjeta.href && tarjeta.href.includes('instanciaID')) {
-        hrefTarjeta = tarjeta;
-      }
-    });
-
-    // Buscar directamente todos los links con instanciaID en la pagina
-    var todosLosLinks = document.querySelectorAll('a[href*="instanciaID"], [href*="instanciaID"]');
+    var todosLosLinks = document.querySelectorAll('a[href*="instanciaID"]');
     todosLosLinks.forEach(function(link) {
       var href = link.href || link.getAttribute('href') || '';
       var match = href.match(/instanciaID=([^&\s]+)/);
       if (match) {
         var instanciaID = decodeURIComponent(match[1]);
         if (!resultado[instanciaID]) {
-          // Buscar el contenedor padre con info de participantes
-          var contenedor = link.closest('[class]') || link.parentElement;
+          var contenedor = link;
           var texto = '';
-          for (var i = 0; i < 5; i++) {
+          for (var i = 0; i < 8; i++) {
             if (contenedor) {
               texto = contenedor.innerText || '';
-              if (texto.includes('Participantes') || texto.includes('capacidad')) break;
+              if (texto.includes('Participantes') || texto.toLowerCase().includes('capacidad')) break;
               contenedor = contenedor.parentElement;
             }
           }
-
           var capacidadCompleta = texto.toLowerCase().includes('capacidad completa');
           var partMatch = texto.match(/(\d+)\s*\/\s*(\d+)\s*Participantes/i) ||
                           texto.match(/(\d+)\s*Participantes/i);
@@ -176,19 +116,48 @@ async function leerDisponibilidadDOM(page) {
             participantes = parseInt(partMatch[1]);
             if (partMatch[2]) cuposMax = parseInt(partMatch[2]);
           }
-
           resultado[instanciaID] = {
             instanciaID: instanciaID,
             participantes: participantes,
             cuposMax: cuposMax,
             capacidadCompleta: capacidadCompleta,
-            textoCompleto: texto.slice(0, 200),
           };
         }
       }
     });
-
     return resultado;
+  });
+}
+
+async function avanzarSemana(page) {
+  return await page.evaluate(function() {
+    var selectores = [
+      'button[class*="next"]',
+      'button[aria-label*="siguiente"]',
+      'button[aria-label*="next"]',
+      'button[aria-label*="Siguiente"]',
+      '[class*="next-week"]',
+      '[class*="nextWeek"]',
+    ];
+    for (var i = 0; i < selectores.length; i++) {
+      var btn = document.querySelector(selectores[i]);
+      if (btn) { btn.click(); return 'selector:' + selectores[i]; }
+    }
+    // Buscar por texto y simbolos en botones
+    var botones = document.querySelectorAll('button');
+    var encontrado = null;
+    botones.forEach(function(b) {
+      if (encontrado) return;
+      var txt = (b.innerText || b.textContent || '').trim();
+      var cls = b.className || '';
+      if (txt === '>' || txt === '›' || txt === '→' || txt === '>>' ||
+          cls.includes('next') || cls.includes('Next') ||
+          cls.includes('forward') || cls.includes('right')) {
+        encontrado = b;
+      }
+    });
+    if (encontrado) { encontrado.click(); return 'texto:' + (encontrado.innerText || encontrado.className).slice(0, 30); }
+    return null;
   });
 }
 
@@ -237,20 +206,13 @@ async function main() {
     console.log('Plan vigente hasta: ' + finVigencia.toISOString().slice(0, 10));
     console.log('Reservas agendadas: ' + reservasAgendadas.size);
 
-    // Determinar fechas pendientes
     const fechasPendientesPorSlot = [];
     for (const slot of SLOTS) {
       const fechas = obtenerProximasFechas(slot, finVigencia);
       const sinAgendar = fechas.filter(function(fecha) {
         const key = fecha + '_' + slot.horarioID;
-        if (reservasAgendadas.has(key)) {
-          console.log('Agendado: ' + slot.nombre + ' ' + fecha);
-          return false;
-        }
-        if (yaAvisado(key)) {
-          console.log('Ya avisado: ' + slot.nombre + ' ' + fecha);
-          return false;
-        }
+        if (reservasAgendadas.has(key)) { console.log('Agendado: ' + slot.nombre + ' ' + fecha); return false; }
+        if (yaAvisado(key)) { console.log('Ya avisado: ' + slot.nombre + ' ' + fecha); return false; }
         return true;
       });
       if (sinAgendar.length > 0) {
@@ -263,135 +225,70 @@ async function main() {
       return;
     }
 
-    // Ir a horarios y navegar semana por semana leyendo el DOM
+    // Ir a horarios y navegar semana por semana
     await page.goto(CONFIG.horariosUrl, { waitUntil: 'networkidle' });
     await page.waitForTimeout(4000);
 
     const disponibilidad = {};
-    let semanasNavigadas = 0;
     const maxSemanas = 8;
 
-    while (semanasNavigadas < maxSemanas) {
-      // Leer que semana estamos viendo
-      const semanaInfo = await page.evaluate(function() {
-        // Buscar fechas visibles en los headers del calendario
-        var headers = document.querySelectorAll('[class*="header"] [class*="date"], [class*="day"] span, thead th, [class*="calendar"] [class*="day"]');
-        var textos = [];
-        headers.forEach(function(h) { textos.push(h.innerText); });
-
-        // Tambien buscar el boton de siguiente semana
-        var btnSiguiente = document.querySelector('button[class*="next"], button[aria-label*="siguiente"], button[aria-label*="next"], [class*="next-week"]');
-
-        return {
-          headers: textos.slice(0, 10),
-          tieneBtnSiguiente: !!btnSiguiente,
-        };
-      });
-
-      console.log('Semana ' + (semanasNavigadas + 1) + ' - headers: ' + JSON.stringify(semanaInfo.headers.slice(0, 5)));
-
-      // Leer disponibilidad del DOM actual
+    for (var semana = 0; semana < maxSemanas; semana++) {
       const dispSemana = await leerDisponibilidadDOM(page);
-      console.log('Instancias en DOM esta semana: ' + Object.keys(dispSemana).length);
+      const count = Object.keys(dispSemana).length;
+      console.log('Semana ' + (semana + 1) + ': ' + count + ' instancias en DOM');
 
-      // Registrar todas las instancias encontradas
       for (const key of Object.keys(dispSemana)) {
         disponibilidad[key] = dispSemana[key];
-        // Extraer fecha del instanciaID (formato: i2026-03-30>claseID>horarioID)
         const match = key.match(/i(\d{4}-\d{2}-\d{2})/);
         if (match) {
-          console.log('Encontrado: ' + key.slice(0, 40) + ' | lleno: ' + dispSemana[key].capacidadCompleta + ' | part: ' + dispSemana[key].participantes);
+          console.log('  ' + key.slice(0, 50) + ' | lleno:' + dispSemana[key].capacidadCompleta + ' part:' + dispSemana[key].participantes + '/' + dispSemana[key].cuposMax);
         }
       }
 
-      // Verificar si ya tenemos todas las fechas pendientes
-      let todasEncontradas = true;
-      for (const item of fechasPendientesPorSlot) {
-        for (const fecha of item.fechas) {
-          const instanciaID = 'i' + fecha + '>' + item.slot.horarioID;
-          // Buscar con cualquier claseID
-          const encontrado = Object.keys(disponibilidad).some(function(k) {
-            return k.includes('i' + fecha) && k.includes(item.slot.horarioID);
-          });
-          if (!encontrado) {
-            todasEncontradas = false;
-          }
-        }
-      }
+      // Verificar si ya tenemos todas las fechas que necesitamos
+      const fechaMaxPendiente = fechasPendientesPorSlot
+        .flatMap(function(i) { return i.fechas; })
+        .sort()
+        .pop();
 
-      if (todasEncontradas && semanasNavigadas > 0) {
-        console.log('Todas las fechas encontradas en el DOM.');
+      const fechasEnDOM = Object.keys(disponibilidad)
+        .map(function(k) { const m = k.match(/i(\d{4}-\d{2}-\d{2})/); return m ? m[1] : null; })
+        .filter(Boolean)
+        .sort();
+
+      const fechaMaxDOM = fechasEnDOM[fechasEnDOM.length - 1] || '';
+      console.log('Fecha max pendiente: ' + fechaMaxPendiente + ' | max en DOM: ' + fechaMaxDOM);
+
+      if (fechaMaxDOM >= fechaMaxPendiente && semana > 0) {
+        console.log('Todas las fechas cubiertas.');
         break;
       }
 
-      // Navegar a la siguiente semana
-      const avanzado = await page.evaluate(function() {
-        // Buscar boton de siguiente semana/dia con varios selectores posibles
-        var selectores = [
-          'button[class*="next"]',
-          'button[aria-label*="siguiente"]',
-          'button[aria-label*="next"]',
-          'button[aria-label*="Siguiente"]',
-          '[class*="next-week"]',
-          '[class*="nextWeek"]',
-          'button:has-text(">")',
-          'button:has-text("Siguiente")',
-        ];
-
-        for (var i = 0; i < selectores.length; i++) {
-          var btn = document.querySelector(selectores[i]);
-          if (btn) {
-            btn.click();
-            return true;
-          }
-        }
-
-        // Buscar el ultimo boton de la barra de navegacion del calendario
-        var botones = document.querySelectorAll('button');
-        var btnNav = null;
-        botones.forEach(function(b) {
-          var txt = b.innerText || b.textContent || '';
-          var cls = b.className || '';
-          if (txt.includes('>') || txt.includes('›') || txt.includes('→') || cls.includes('next') || cls.includes('Next')) {
-            btnNav = b;
-          }
-        });
-        if (btnNav) {
-          btnNav.click();
-          return true;
-        }
-
-        return false;
-      });
-
-      if (!avanzado) {
-        console.log('No se pudo avanzar a la siguiente semana en iteracion ' + (semanasNavigadas + 1));
-        // Log del HTML para debug
-        const html = await page.evaluate(function() {
-          var botones = document.querySelectorAll('button');
+      const resultado = await avanzarSemana(page);
+      if (!resultado) {
+        console.log('No se encontro boton de siguiente semana. HTML botones:');
+        const btnInfo = await page.evaluate(function() {
+          var bs = document.querySelectorAll('button');
           var info = [];
-          botones.forEach(function(b) {
-            info.push(b.className + ' | ' + (b.innerText || '').slice(0, 20));
+          bs.forEach(function(b) {
+            info.push((b.className || '').slice(0, 40) + '|' + (b.innerText || '').slice(0, 15));
           });
-          return info.slice(0, 10).join(' || ');
+          return info.slice(0, 15).join(' || ');
         });
-        console.log('Botones disponibles: ' + html);
+        console.log(btnInfo);
         break;
       }
-
+      console.log('Avanzando semana: ' + resultado);
       await page.waitForTimeout(4000);
-      semanasNavigadas++;
     }
 
-    console.log('Total instancias en DOM: ' + Object.keys(disponibilidad).length);
+    console.log('Total instancias encontradas: ' + Object.keys(disponibilidad).length);
 
     // Analizar disponibilidad
     const pendientes = [];
-
     for (const item of fechasPendientesPorSlot) {
       const slot = item.slot;
       for (const fecha of item.fechas) {
-        // Buscar instancia por fecha y horarioID
         let instancia = null;
         for (const key of Object.keys(disponibilidad)) {
           if (key.includes('i' + fecha) && key.includes(slot.horarioID)) {
@@ -399,19 +296,15 @@ async function main() {
             break;
           }
         }
-
         if (!instancia) {
           console.log('Sin datos DOM: ' + slot.nombre + ' ' + fecha);
           continue;
         }
-
         const cuposMax = instancia.cuposMax || 6;
         const participantes = instancia.participantes || 0;
         const cuposLibres = cuposMax - participantes;
         const capacidadCompleta = instancia.capacidadCompleta || cuposLibres <= 0;
-
         console.log(slot.nombre + ' ' + fecha + ': ' + participantes + '/' + cuposMax + ' -> ' + (capacidadCompleta ? 'LLENO' : cuposLibres + ' libre(s)'));
-
         if (!capacidadCompleta && cuposLibres > 0) {
           const key = fecha + '_' + slot.horarioID;
           pendientes.push({ slot: slot, fecha: fecha, key: key, cuposLibres: cuposLibres });
@@ -424,37 +317,23 @@ async function main() {
       return;
     }
 
-    const lineas = [
-      'BoxMagic - Cupo disponible',
-      '',
-      'Hay ' + pendientes.length + ' clase(s) con cupo que no has agendado:',
-      '',
-    ];
-
+    const lineas = ['BoxMagic - Cupo disponible', '', 'Hay ' + pendientes.length + ' clase(s) con cupo que no has agendado:', ''];
     const porFecha = {};
     for (const item of pendientes) {
       if (!porFecha[item.fecha]) porFecha[item.fecha] = [];
       porFecha[item.fecha].push(item.slot.nombre + ' (' + item.cuposLibres + ' cupo(s))');
     }
-
     for (const fecha of Object.keys(porFecha).sort()) {
-      const fechaLegible = new Date(fecha + 'T12:00:00').toLocaleDateString('es-CL', {
-        weekday: 'long', day: 'numeric', month: 'long'
-      });
+      const fechaLegible = new Date(fecha + 'T12:00:00').toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'long' });
       lineas.push(fechaLegible + ':');
-      for (const nombre of porFecha[fecha]) {
-        lineas.push('  ' + nombre);
-      }
+      for (const nombre of porFecha[fecha]) { lineas.push('  ' + nombre); }
       lineas.push('');
     }
-
     lineas.push('Agenda en: members.boxmagic.app');
 
     try {
       await enviarWhatsApp(lineas.join('\n'));
-      for (const item of pendientes) {
-        marcarAvisado(item.key);
-      }
+      for (const item of pendientes) { marcarAvisado(item.key); }
     } catch (err) {
       console.log('Error WhatsApp: ' + err.message);
     }
