@@ -1,5 +1,4 @@
 const { chromium } = require('playwright-core');
-const nodemailer = require('nodemailer').default || require('nodemailer');
 const twilio = require('twilio');
 
 const CONFIG = {
@@ -113,10 +112,24 @@ async function checkCupos() {
     }
 
     // ── 2. Cupos disponibles ──────────────────────────────────────────────
+    // Filtrar reservasNoAsignadas por el período activo del plan
+    // El instanciaID tiene formato "i{fechaYMD}>..." — filtramos por fecha dentro del período
+    const inicioVigencia = new Date(planActivo.inicioVigencia || 0);
     const todasRNA = Object.values(perfil.reservasNoAsignadas || {});
-    const rnaDelPlan = todasRNA.filter(r => !r.membresiaID || r.membresiaID === planActivo.membresiaID);
-    const cuposDisponibles = rnaDelPlan.length > 0 ? rnaDelPlan.length : todasRNA.length;
-    console.log(`📦 reservasNoAsignadas: total=${todasRNA.length}, del plan=${rnaDelPlan.length}`);
+    const rnaDelPeriodo = todasRNA.filter(r => {
+      // Intentar extraer fecha del instanciaID: "i2026-03-25>claseID>horarioID"
+      if (r.instanciaID) {
+        const match = r.instanciaID.match(/^i(\d{4}-\d{2}-\d{2})/);
+        if (match) {
+          const fechaInst = new Date(match[1]);
+          return fechaInst >= inicioVigencia && fechaInst <= planActivo.finVigencia;
+        }
+      }
+      // Si no tiene instanciaID con fecha, incluir si membresiaID coincide
+      return !r.membresiaID || r.membresiaID === planActivo.membresiaID;
+    });
+    const cuposDisponibles = rnaDelPeriodo.length;
+    console.log(`📦 reservasNoAsignadas: total=${todasRNA.length}, período activo=${cuposDisponibles}`);
 
     console.log(`📋 Plan: ${planActivo.planNombre}`);
     console.log(`📅 Vigente hasta: ${planActivo.finVigencia.toLocaleDateString('es-CL')}`);
@@ -168,42 +181,17 @@ async function checkCupos() {
 }
 
 async function sendNotification(slots, cuposDisponibles) {
-  // Construir lista de slots para el mensaje
   const listaSlots = slots.slice(0, 10).map(s =>
     `${s.diaNombre} ${s.fechaYMD} ${s.hora}:00-${s.hora+1}:00hrs`
   ).join('\n');
-
-  const listaHTML = slots.slice(0, 10).map(s =>
-    `<li>${s.diaNombre} ${s.fechaYMD} — ${s.hora}:00-${s.hora+1}:00hrs</li>`
-  ).join('');
-
-  const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_PASS }
-  });
-
-  await transporter.sendMail({
-    from: process.env.GMAIL_USER,
-    to: CONFIG.email,
-    subject: `🥊 ${cuposDisponibles} cupo(s) sin agendar — ¡reserva ahora!`,
-    html: `
-      <h2>🥊 Tienes ${cuposDisponibles} cupo(s) sin agendar</h2>
-      <p>Slots disponibles en tu plan:</p>
-      <ul>${listaHTML}</ul>
-      <a href="${CONFIG.boxmagicUrl}" style="background:#7c3aed;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;">
-        Reservar ahora →
-      </a>
-    `
-  });
-  console.log(`📧 Email enviado con ${slots.length} slot(s)`);
 
   const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
   await client.messages.create({
     from: 'whatsapp:+14155238886',
     to: process.env.TWILIO_WHATSAPP_TO,
-    body: `🥊 Tienes ${cuposDisponibles} cupo(s) sin agendar!\n\nSlots disponibles:\n${listaSlots}\n\nReserva: ${CONFIG.boxmagicUrl}`
+    body: `🥊 Tienes ${cuposDisponibles} cupo(s) sin agendar!\n\nSlots disponibles:\n${listaSlots}\n\nReserva: https://members.boxmagic.app/g/oGDPQaGLb5/horarios`
   });
-  console.log(`💬 WhatsApp enviado`);
+  console.log(`💬 WhatsApp enviado con ${slots.length} slot(s)`);
 }
 
 async function loop() {
