@@ -93,12 +93,13 @@ async function main() {
   limpiarAvisosViejos();
 
   const browser = await chromium.launch({ args: ['--no-sandbox'] });
-  const context = await browser.newContext();
+
+  // Bloquear Service Worker para que porIDs no se sirva desde cache
+  const context = await browser.newContext({ serviceWorkers: 'block' });
   const page = await context.newPage();
 
   let perfilData = null;
 
-  // Interceptar perfil
   page.on('response', async function(response) {
     try {
       const ct = response.headers()['content-type'] || '';
@@ -113,7 +114,6 @@ async function main() {
   });
 
   try {
-    // Login
     console.log('Iniciando login...');
     await page.goto(CONFIG.loginUrl, { waitUntil: 'networkidle' });
     await page.fill('input[type="email"], input[name="email"]', CONFIG.email);
@@ -122,7 +122,6 @@ async function main() {
     await page.waitForTimeout(3000);
     console.log('Login exitoso');
 
-    // Cargar perfil
     await page.goto(CONFIG.perfilUrl, { waitUntil: 'networkidle' });
     await page.waitForTimeout(8000);
 
@@ -162,10 +161,7 @@ async function main() {
       return;
     }
 
-    // Para cada fecha pendiente, navegar a horarios y capturar porIDs
-    const pendientes = [];
-
-    // Recolectar todas las fechas unicas a revisar
+    // Fechas unicas a revisar
     const fechasUnicas = new Set();
     for (const item of fechasPendientesPorSlot) {
       for (const fecha of item.fechas) {
@@ -173,15 +169,13 @@ async function main() {
       }
     }
 
-    // Por cada fecha, navegar a horarios y capturar disponibilidad
+    // Por cada fecha, navegar a horarios y capturar porIDs
     const disponibilidadPorFecha = {};
 
     for (const fecha of fechasUnicas) {
       console.log('Navegando horarios para: ' + fecha);
-
       const cuposCapturados = {};
 
-      // Listener para capturar porIDs de esta fecha
       const listener = async function(response) {
         try {
           const url = response.url();
@@ -189,8 +183,7 @@ async function main() {
             const ct = response.headers()['content-type'] || '';
             if (ct.includes('application/json')) {
               const json = await response.json();
-              console.log('porIDs capturado: ' + JSON.stringify(json).slice(0, 300));
-              // Guardar todas las instancias capturadas
+              console.log('porIDs capturado (' + fecha + '): ' + JSON.stringify(json).slice(0, 200));
               if (json && typeof json === 'object') {
                 for (const key of Object.keys(json)) {
                   cuposCapturados[key] = json[key];
@@ -202,41 +195,37 @@ async function main() {
       };
 
       page.on('response', listener);
-
-      // Navegar a la fecha especifica en el calendario
-      const urlFecha = CONFIG.horariosUrl + '?fecha=' + fecha;
-      await page.goto(urlFecha, { waitUntil: 'networkidle' });
-      await page.waitForTimeout(5000);
-
+      await page.goto(CONFIG.horariosUrl + '?fecha=' + fecha, { waitUntil: 'networkidle' });
+      await page.waitForTimeout(6000);
       page.off('response', listener);
 
       disponibilidadPorFecha[fecha] = cuposCapturados;
       console.log('Instancias capturadas para ' + fecha + ': ' + Object.keys(cuposCapturados).length);
     }
 
-    // Analizar disponibilidad por slot
+    // Analizar disponibilidad
+    const pendientes = [];
+
     for (const item of fechasPendientesPorSlot) {
       const slot = item.slot;
       for (const fecha of item.fechas) {
         const cupos = disponibilidadPorFecha[fecha] || {};
         const instanciaID = 'i' + fecha + '>' + slot.claseID + '>' + slot.horarioID;
 
-        // Buscar la instancia en los datos capturados
         let instancia = cupos[instanciaID];
 
-        // Si no encontramos con ese key exacto, buscar por horarioID
         if (!instancia) {
           for (const key of Object.keys(cupos)) {
             if (key.includes(slot.horarioID)) {
               instancia = cupos[key];
-              console.log('Instancia encontrada con key alternativo: ' + key);
+              console.log('Instancia encontrada con key: ' + key);
               break;
             }
           }
         }
 
         if (!instancia) {
-          console.log('Sin datos de disponibilidad: ' + slot.nombre + ' ' + fecha);
+          console.log('Sin datos: ' + slot.nombre + ' ' + fecha);
           continue;
         }
 
@@ -259,7 +248,6 @@ async function main() {
       return;
     }
 
-    // Armar mensaje
     const lineas = [
       'BoxMagic - Cupo disponible',
       '',
