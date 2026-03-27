@@ -53,12 +53,12 @@ async function obtenerPerfil() {
 
   page.on('response', async (response) => {
     try {
-      const url = response.url();
-      if (url.includes('perfilEnGimnasio') || url.includes('/perfil')) {
+      const ct = response.headers()['content-type'] || '';
+      if (ct.includes('application/json')) {
         const json = await response.json();
         if (json?.perfilEnGimnasio) {
           perfilData = json.perfilEnGimnasio;
-          console.log('📦 Perfil interceptado');
+          console.log('📦 Perfil interceptado desde:', response.url());
         }
       }
     } catch {}
@@ -74,7 +74,7 @@ async function obtenerPerfil() {
     console.log('✅ Login exitoso');
 
     await page.goto(CONFIG.perfilUrl, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(8000);
   } finally {
     await browser.close();
   }
