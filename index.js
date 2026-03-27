@@ -73,12 +73,6 @@ async function getPlanActivo(page) {
             const membresias = data.perfilEnGimnasio.membresias;
             const reservas = data.perfilEnGimnasio.reservas || {};
 
-            // Debug: ver todos los campos de cada membresía
-            for (const key of Object.keys(membresias)) {
-              const m = membresias[key];
-              console.log(`🔍 Membresía [${key}]:`, JSON.stringify(m).substring(0, 600));
-            }
-
             for (const key in membresias) {
               const m = membresias[key];
               if (!m.activa) continue;
@@ -88,6 +82,20 @@ async function getPlanActivo(page) {
               if (finVigencia < hoy) continue;
 
               const membresiaID = m.membresiaID || key;
+              const nombre = m.planNombre || m.nombre || m.plan || 'Plan desconocido';
+
+              // Log completo de la membresía activa para ver todos sus campos
+              console.log(`✅ Membresía activa [${key}] campos:`, JSON.stringify(Object.keys(m)));
+              console.log(`   cuposDescontados=${m.cuposDescontados}`);
+              console.log(`   cuposAgendados=${m.cuposAgendados}`);
+              console.log(`   cuposSinAgendar=${m.cuposSinAgendar}`);
+              console.log(`   cuposUsados=${m.cuposUsados}`);
+              console.log(`   totalSesiones=${m.totalSesiones}`);
+              console.log(`   sesionesRestantes=${m.sesionesRestantes}`);
+              console.log(`   sesiones=${m.sesiones}`);
+              console.log(`   cuposMaxMes=${m.cuposMaxMes}`);
+
+              // Reservas de esta membresía (solo para fechasReservadas, NO para contar cupos)
               const reservasDelPlan = Object.values(reservas).filter(r =>
                 r.membresiaID === membresiaID
               );
@@ -101,45 +109,42 @@ async function getPlanActivo(page) {
                 })
               );
 
-              const nombre = m.planNombre || m.nombre || m.plan || 'Plan desconocido';
-
-              // Leer cupos directamente desde la API si están disponibles
-              let cuposDisponibles =
-                m.cuposSinAgendar ??
-                m.cuposDisponibles ??
-                m.cuposRestantes ??
+              // Cupos disponibles: leer desde campos de la API
+              // BoxMagic muestra: 1 sin agendar, 12 agendados, 3 usados → cuposSinAgendar=1
+              const cuposDisponibles =
+                m.cuposSinAgendar ??          // cupos que aún no tienen clase asignada
                 m.sesionesRestantes ??
-                null;
+                m.cuposRestantes ??
+                // Fallback: cuposMaxMes - cuposAgendados - cuposDescontados
+                (m.cuposMaxMes != null
+                  ? m.cuposMaxMes - (m.cuposAgendados || 0) - (m.cuposDescontados || 0)
+                  : null);
 
-              let totalCupos =
-                m.totalSesiones ??
-                m.totalCupos ??
-                m.sesiones ??
-                null;
-
-              // Fallback: calcular desde reservas
               if (cuposDisponibles === null) {
-                const match = nombre.match(/^(\d+)/);
-                totalCupos = totalCupos ?? (match ? parseInt(match[1]) : 16);
-                const cuposUsados = reservasDelPlan.length;
-                cuposDisponibles = totalCupos - cuposUsados;
-                console.log(`⚠️  Cupos calculados desde reservas: ${cuposUsados} usados de ${totalCupos}`);
+                console.log('❌ No se pudieron determinar cupos disponibles desde la API');
+                // Último recurso: asumir que hay cupos y continuar
+                planData = {
+                  membresiaID,
+                  planNombre: nombre,
+                  finVigencia: m.finVigencia,
+                  cuposDisponibles: 1, // asumir al menos 1 para que no se detenga
+                  totalCupos: '?',
+                  fechasReservadas
+                };
               } else {
-                console.log(`✅ Cupos leídos desde API: ${cuposDisponibles} disponibles`);
+                planData = {
+                  membresiaID,
+                  planNombre: nombre,
+                  finVigencia: m.finVigencia,
+                  cuposDisponibles,
+                  totalCupos: m.cuposMaxMes || m.totalSesiones || '?',
+                  fechasReservadas
+                };
               }
-
-              planData = {
-                membresiaID,
-                planNombre: nombre,
-                finVigencia: m.finVigencia,
-                cuposDisponibles,
-                totalCupos: totalCupos ?? '?',
-                fechasReservadas
-              };
 
               console.log(`📋 Plan: ${nombre}`);
               console.log(`📅 Vigente hasta: ${finVigencia.toLocaleDateString('es-CL')}`);
-              console.log(`🎯 Cupos disponibles: ${cuposDisponibles}`);
+              console.log(`🎯 Cupos disponibles: ${planData.cuposDisponibles}`);
               break;
             }
           }
