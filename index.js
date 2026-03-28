@@ -1,119 +1,6 @@
-const fs = require('fs');
-const { chromium } = require('playwright');
-const twilio = require('twilio');
+import { chromium } from 'playwright';
 
-// ================= CONFIG =================
-
-const EMAIL = process.env.BOXMAGIC_EMAIL;
-const PASSWORD = process.env.BOXMAGIC_PASSWORD;
-
-const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
-const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
-const WHATSAPP_TO = process.env.TWILIO_WHATSAPP_TO;
-
-const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
-
-const AVISOS_FILE = '/app/avisos_enviados.json';
-
-const SLOTS = [
-  { dia: 1, hora: '19:00', nombre: 'Lunes 19h' },
-  { dia: 1, hora: '20:00', nombre: 'Lunes 20h' },
-  { dia: 2, hora: '19:00', nombre: 'Martes 19h' },
-  { dia: 2, hora: '20:00', nombre: 'Martes 20h' },
-  { dia: 3, hora: '20:00', nombre: 'Miercoles 20h' },
-  { dia: 5, hora: '19:00', nombre: 'Viernes 19h' }
-];
-
-// ================= HELPERS =================
-
-function log(msg) {
-  console.log(`[${new Date().toISOString()}] ${msg}`);
-}
-
-function sleep(ms) {
-  return new Promise(res => setTimeout(res, ms));
-}
-
-function normalizarHora(hora) {
-  const [h, m] = hora.split(':').map(Number);
-  const periodo = h >= 12 ? 'pm' : 'am';
-  const h12 = h % 12 === 0 ? 12 : h % 12;
-  return `${h12}:${m.toString().padStart(2, '0')}${periodo}`;
-}
-
-function cargarAvisos() {
-  if (!fs.existsSync(AVISOS_FILE)) return {};
-  return JSON.parse(fs.readFileSync(AVISOS_FILE));
-}
-
-function guardarAvisos(data) {
-  fs.writeFileSync(AVISOS_FILE, JSON.stringify(data, null, 2));
-}
-
-// ================= TWILIO =================
-
-async function enviarWhatsApp(mensaje) {
-  try {
-    await client.messages.create({
-      from: 'whatsapp:+14155238886',
-      to: WHATSAPP_TO,
-      body: mensaje
-    });
-    log(`📩 WhatsApp enviado: ${mensaje}`);
-  } catch (e) {
-    log(`❌ Error WhatsApp: ${e.message}`);
-  }
-}
-
-// ================= SCRAPER =================
-
-async function leerTarjetasDOM(page) {
-  return await page.evaluate(() => {
-    const resultados = [];
-
-    const elementos = Array.from(document.querySelectorAll('*'))
-      .filter(el => {
-        const t = el.innerText || '';
-        return (
-          t.includes('Participants') ||
-          t.includes('participants') ||
-          t.includes('max') ||
-          t.includes('Max')
-        );
-      });
-
-    for (const el of elementos) {
-      const contenedor = el.closest('div');
-      if (!contenedor) continue;
-
-      const texto = contenedor.innerText;
-
-      // Regex más flexible
-      const match = texto.match(/(\d+)\s*(max|Max).*?(\d+).*?(Participants|participants).*?(\d{1,2}:\d{2}(am|pm))/i);
-
-      if (!match) continue;
-
-      const max = parseInt(match[1]);
-      const inscritos = parseInt(match[3]);
-      const hora = match[5];
-
-      resultados.push({
-        texto,
-        max,
-        inscritos,
-        disponibles: max - inscritos,
-        hora
-      });
-    }
-
-    return resultados;
-  });
-}
-
-// ================= MAIN =================
-
-(async () => {
-  log('🚀 Iniciando monitor...');
+async function main() {
 
   const browser = await chromium.launch({
     headless: true,
@@ -123,84 +10,127 @@ async function leerTarjetasDOM(page) {
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  try {
-    // LOGIN
-    log('🔐 Login...');
-    await page.goto('https://members.boxmagic.app/a/g?o=pi-e', { waitUntil: 'networkidle' });
+  console.log('🚀 Iniciando monitor...');
 
-    await page.fill('input[type="email"]', EMAIL);
-    await page.fill('input[type="password"]', PASSWORD);
+  // 👉 URL directa a tu dashboard
+  await page.goto('https://app.boxmagic.cl/login', { waitUntil: 'networkidle' });
 
-    await Promise.all([
-      page.click('button[type="submit"]'),
-      page.waitForNavigation({ waitUntil: 'networkidle' })
-    ]);
+  // 🔐 LOGIN (AJUSTA SI ES NECESARIO)
+  await page.fill('input[type="email"]', process.env.EMAIL);
+  await page.fill('input[type="password"]', process.env.PASSWORD);
+  await page.click('button[type="submit"]');
 
-    log('✅ Login OK');
+  await page.waitForTimeout(5000);
 
-    // HORARIOS
-    log('📅 Navegando a horarios...');
-    await page.goto('https://members.boxmagic.app/a/g/oGDPQaGLb5/horarios', {
-      waitUntil: 'networkidle'
-    });
+  console.log('✅ Login OK');
 
-    // 👇 ESPERA INTELIGENTE
-    log('⏳ Esperando render...');
-    try {
-      await page.waitForFunction(() => {
-        return document.body.innerText.length > 1000;
-      }, { timeout: 15000 });
-    } catch {
-      log('⚠️ Timeout esperando contenido');
-    }
+  // 👉 Ir a horarios
+  await page.goto('https://app.boxmagic.cl/schedules', { waitUntil: 'networkidle' });
 
-    await sleep(3000);
+  await page.waitForTimeout(5000);
 
-    // SCRAPING
-    log('🔎 Leyendo DOM...');
-    const clases = await leerTarjetasDOM(page);
+  console.log('📅 Navegando a horarios...');
 
-    log(`📊 Clases detectadas: ${clases.length}`);
+  // 👉 SCROLL para cargar todo
+  await autoScroll(page);
 
-    if (clases.length === 0) {
-      log('🚨 DEBUG: imprimiendo HTML parcial...');
-      const texto = await page.evaluate(() => document.body.innerText);
-      console.log(texto.slice(0, 3000));
-    }
+  console.log('📜 Scroll completo');
 
-    console.log(JSON.stringify(clases, null, 2));
+  // 👉 LEER DOM REAL
+  const clases = await leerTarjetasDOM(page);
 
-    const avisos = cargarAvisos();
-    const hoy = new Date().toISOString().slice(0, 10);
+  console.log(`📊 Clases detectadas: ${clases.length}`);
+  console.log(JSON.stringify(clases, null, 2));
 
-    for (const slot of SLOTS) {
-      const horaNorm = normalizarHora(slot.hora);
+  await browser.close();
 
-      const clase = clases.find(c => c.hora === horaNorm);
+  console.log('🔴 Fin del monitor');
+}
 
-      if (!clase) {
-        log(`⚠️ No encontrada: ${slot.nombre}`);
-        continue;
-      }
 
-      log(`🧠 ${slot.nombre}: ${clase.inscritos}/${clase.max}`);
+// ===============================
+// 🔥 PARSER REAL (EL IMPORTANTE)
+// ===============================
+async function leerTarjetasDOM(page) {
+  return await page.evaluate(() => {
 
-      if (clase.disponibles > 0) {
-        const key = `${hoy}_${slot.nombre}`;
+    const texto = document.body.innerText
+      .split('\n')
+      .map(l => l.trim())
+      .filter(Boolean);
 
-        if (!avisos[key]) {
-          await enviarWhatsApp(`🔥 CUPO DISPONIBLE: ${slot.nombre}`);
-          avisos[key] = true;
+    const resultados = [];
+
+    for (let i = 0; i < texto.length; i++) {
+
+      // Detectamos "max" como ancla real
+      if (texto[i].toLowerCase().includes('max')) {
+
+        const max = parseInt(texto[i].match(/\d+/)?.[0] || '0');
+
+        let inscritos = 0;
+        let hora = null;
+
+        // mirar alrededor (contexto)
+        for (let j = i - 6; j <= i + 6; j++) {
+          if (!texto[j]) continue;
+
+          const linea = texto[j].toLowerCase();
+
+          // inscritos
+          if (linea.includes('no one')) {
+            inscritos = 0;
+          }
+
+          if (/^\d+$/.test(texto[j])) {
+            inscritos = parseInt(texto[j]);
+          }
+
+          // hora (captura inicio del rango)
+          const matchHora = texto[j].match(/\d{1,2}:\d{2}(am|pm)/i);
+          if (matchHora) {
+            hora = matchHora[0];
+          }
+        }
+
+        if (hora) {
+          resultados.push({
+            hora,
+            inscritos,
+            max,
+            disponibles: max - inscritos
+          });
         }
       }
     }
 
-    guardarAvisos(avisos);
+    return resultados;
+  });
+}
 
-  } catch (e) {
-    log(`❌ ERROR: ${e.message}`);
-  } finally {
-    await browser.close();
-    log('🛑 Fin del monitor');
-  }
-})();
+
+// ===============================
+// 🔄 AUTO SCROLL
+// ===============================
+async function autoScroll(page) {
+  await page.evaluate(async () => {
+    await new Promise((resolve) => {
+      let totalHeight = 0;
+      const distance = 300;
+
+      const timer = setInterval(() => {
+        window.scrollBy(0, distance);
+        totalHeight += distance;
+
+        if (totalHeight >= document.body.scrollHeight) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 300);
+    });
+  });
+}
+
+
+// ===============================
+main();
