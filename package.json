@@ -2,11 +2,10 @@
   "name": "boxmagic-monitor",
   "version": "1.0.0",
   "type": "module",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  },
   "dependencies": {
     "playwright": "^1.42.0"
+  },
+  "scripts": {
+    "start": "node index.js"
   }
 }
