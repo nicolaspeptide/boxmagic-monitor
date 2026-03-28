@@ -1,84 +1,93 @@
 import { chromium } from 'playwright';
 
-const EMAIL = process.env.BOXMAGIC_EMAIL;
-const PASSWORD = process.env.BOXMAGIC_PASSWORD;
-
-async function runMonitor() {
-  console.log('🚀 Iniciando monitor...');
-
+(async () => {
   const browser = await chromium.launch({
-    headless: true,
-    args: ['--no-sandbox']
+    headless: true // cambia a false si quieres ver qué pasa
   });
 
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  // 🔥 LOG TOTAL
-  page.on('request', req => {
-    console.log('📡', req.method(), req.url());
-  });
-
-  page.on('response', async res => {
-    const url = res.url();
+  // 🔥 CAPTURADOR DE APIs
+  page.on('response', async (response) => {
+    const url = response.url();
 
     if (
-      url.includes('api') ||
-      url.includes('schedule') ||
-      url.includes('class') ||
-      url.includes('booking')
+      url.includes('/api') ||
+      url.includes('boxmagic') ||
+      url.includes('schedules') ||
+      url.includes('classes')
     ) {
-      console.log('\n🔥 API DETECTADA:', url);
-
       try {
-        const text = await res.text();
-        console.log(text.slice(0, 1500));
+        const status = response.status();
+        const body = await response.text();
+
+        console.log('\n🔥 API DETECTADA:', url);
+        console.log('STATUS:', status);
+        console.log('BODY:', body.substring(0, 500)); // evita logs gigantes
       } catch (e) {}
     }
   });
 
-  try {
-    // LOGIN
-    await page.goto('https://boxmagic.cl/login');
+  // 🌐 IR AL LOGIN
+  console.log('🌐 Abriendo login...');
+  await page.goto('https://boxmagic.cl/login', {
+    waitUntil: 'domcontentloaded'
+  });
 
-    await page.fill('input[type="email"]', EMAIL);
-    await page.fill('input[type="password"]', PASSWORD);
-    await page.click('button[type="submit"]');
+  // ⏳ esperar que cargue
+  await page.waitForTimeout(3000);
 
-    await page.waitForLoadState('networkidle');
-    console.log('✅ Login OK');
+  // 🔐 LOGIN (ajusta selectores si cambian)
+  console.log('🔐 Iniciando sesión...');
 
-    // 🔥 ESPERAR APP
-    await page.waitForTimeout(5000);
+  await page.fill('input[type="email"]', 'TU_EMAIL');
+  await page.fill('input[type="password"]', 'TU_PASSWORD');
 
-    // 🔥 CLICK REAL (CLAVE ABSOLUTA)
-    console.log('🖱️ Buscando botón schedules...');
+  await page.click('button[type="submit"]');
 
-    const botones = await page.locator('a, button').all();
+  // esperar login real
+  await page.waitForTimeout(8000);
 
-    for (const b of botones) {
-      const text = await b.innerText().catch(() => '');
-      if (text.toLowerCase().includes('schedule') || text.toLowerCase().includes('clase')) {
-        console.log('👉 CLICK en:', text);
-        await b.click();
+  console.log('✅ Login realizado');
+
+  // 🚀 INTENTO DIRECTO A SCHEDULES
+  console.log('🧭 Navegando directo a schedules...');
+  await page.goto('https://app.boxmagic.cl/schedules', {
+    waitUntil: 'domcontentloaded'
+  });
+
+  await page.waitForTimeout(5000);
+
+  // 🔥 FALLBACK: CLICK EN MENÚ SPA
+  console.log('🔎 Buscando botón de agenda/clases...');
+
+  const elements = await page.locator('a, button').all();
+
+  for (const el of elements) {
+    try {
+      const text = (await el.innerText()).toLowerCase();
+
+      if (
+        text.includes('agenda') ||
+        text.includes('clase') ||
+        text.includes('horario') ||
+        text.includes('schedule')
+      ) {
+        console.log('👉 CLICK EN:', text);
+        await el.click();
         break;
       }
-    }
-
-    // 🔥 ESPERAR CARGA REAL
-    await page.waitForTimeout(10000);
-
-    // 🔥 SCROLL (dispara lazy load)
-    await page.mouse.wheel(0, 1000);
-    await page.waitForTimeout(5000);
-
-    console.log('🏁 Fin del monitor');
-
-  } catch (err) {
-    console.error('❌ ERROR:', err.message);
-  } finally {
-    await browser.close();
+    } catch (e) {}
   }
-}
 
-runMonitor();
+  // 🧠 activar lazy loading
+  console.log('🖱️ Scrolleando...');
+  await page.mouse.wheel(0, 3000);
+
+  await page.waitForTimeout(10000);
+
+  console.log('🏁 FIN DEL SCRIPT');
+
+  await browser.close();
+})();
