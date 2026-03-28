@@ -14,6 +14,32 @@ async function runMonitor() {
   const context = await browser.newContext();
   const page = await context.newPage();
 
+  // 🔥 INTERCEPTAR TODO
+  page.on('request', req => {
+    if (req.url().includes('api') || req.url().includes('schedule')) {
+      console.log('📡 REQUEST:', req.method(), req.url());
+    }
+  });
+
+  page.on('response', async res => {
+    const url = res.url();
+
+    if (url.includes('api') || url.includes('schedule')) {
+      console.log('📥 RESPONSE:', url);
+
+      try {
+        const text = await res.text();
+
+        if (text.length < 2000) {
+          console.log(text);
+        } else {
+          console.log(text.slice(0, 1000));
+        }
+
+      } catch (e) {}
+    }
+  });
+
   try {
     // LOGIN
     await page.goto('https://boxmagic.cl/login');
@@ -26,31 +52,12 @@ async function runMonitor() {
 
     console.log('✅ Login OK');
 
-    // 🔥 EXTRAER XSRF TOKEN
-    const cookies = await context.cookies();
-    const xsrf = cookies.find(c => c.name === 'XSRF-TOKEN');
+    // 🔥 IR A DONDE ESTÁN LAS CLASES (IMPORTANTE)
+    await page.goto('https://app.boxmagic.cl'); 
 
-    if (!xsrf) {
-      console.log('❌ No XSRF token');
-      return;
-    }
+    await page.waitForTimeout(8000); // deja cargar SPA
 
-    console.log('🔐 XSRF encontrado');
-
-    // 🔥 USAR REQUEST INTERNO (clave)
-    const request = await context.request;
-
-    const res = await request.get('https://boxmagic.cl/schedules', {
-      headers: {
-        'x-xsrf-token': decodeURIComponent(xsrf.value),
-        'accept': 'application/json'
-      }
-    });
-
-    const text = await res.text();
-
-    console.log('\n📡 RESPUESTA RAW:');
-    console.log(text.slice(0, 2000));
+    console.log('🏁 Fin del monitor');
 
   } catch (err) {
     console.error('❌ ERROR:', err.message);
