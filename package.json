@@ -1,5 +1,8 @@
 {
   "scripts": {
     "start": "node index.cjs"
+  },
+  "dependencies": {
+    "playwright": "^1.58.2"
   }
 }
