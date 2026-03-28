@@ -1,6 +1,4 @@
-require('dotenv').config();
 const fs = require('fs');
-const path = require('path');
 const { chromium } = require('playwright');
 const twilio = require('twilio');
 
@@ -109,6 +107,11 @@ async function leerTarjetasDOM(page) {
 (async () => {
   log('🚀 Iniciando monitor...');
 
+  if (!EMAIL || !PASSWORD) {
+    log('❌ Faltan variables de entorno BOXMAGIC_EMAIL / PASSWORD');
+    process.exit(1);
+  }
+
   const browser = await chromium.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox']
@@ -122,7 +125,7 @@ async function leerTarjetasDOM(page) {
   const page = await context.newPage();
 
   try {
-    // LOGIN
+    // ================= LOGIN =================
     log('🔐 Login...');
     await page.goto('https://members.boxmagic.app/a/g?o=pi-e', { waitUntil: 'networkidle' });
 
@@ -136,20 +139,20 @@ async function leerTarjetasDOM(page) {
 
     log('✅ Login OK');
 
-    // IR A HORARIOS
+    // ================= HORARIOS =================
     log('📅 Navegando a horarios...');
     await page.goto('https://members.boxmagic.app/a/g/oGDPQaGLb5/horarios', {
       waitUntil: 'networkidle'
     });
 
-    await sleep(3000);
+    await sleep(5000);
 
-    // LEER CLASES
+    // ================= SCRAPING =================
     log('🔎 Leyendo DOM...');
     const clases = await leerTarjetasDOM(page);
 
-    log(`📊 Clases encontradas: ${clases.length}`);
-    console.log(clases);
+    log(`📊 Clases detectadas: ${clases.length}`);
+    console.log(JSON.stringify(clases, null, 2));
 
     const avisos = cargarAvisos();
     const hoy = new Date().toISOString().slice(0, 10);
