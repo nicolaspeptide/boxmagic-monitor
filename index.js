@@ -14,9 +14,9 @@ async function runMonitor() {
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  // 🔥 INTERCEPTAR TODO
+  // 🔥 INTERCEPTAR TODO LO ÚTIL
   page.on('request', req => {
-    if (req.url().includes('api') || req.url().includes('schedule')) {
+    if (req.url().includes('api') || req.url().includes('class')) {
       console.log('📡 REQUEST:', req.method(), req.url());
     }
   });
@@ -24,18 +24,12 @@ async function runMonitor() {
   page.on('response', async res => {
     const url = res.url();
 
-    if (url.includes('api') || url.includes('schedule')) {
+    if (url.includes('api') || url.includes('class')) {
       console.log('📥 RESPONSE:', url);
 
       try {
         const text = await res.text();
-
-        if (text.length < 2000) {
-          console.log(text);
-        } else {
-          console.log(text.slice(0, 1000));
-        }
-
+        console.log(text.slice(0, 1000));
       } catch (e) {}
     }
   });
@@ -49,13 +43,19 @@ async function runMonitor() {
     await page.click('button[type="submit"]');
 
     await page.waitForLoadState('networkidle');
-
     console.log('✅ Login OK');
 
-    // 🔥 IR A DONDE ESTÁN LAS CLASES (IMPORTANTE)
-    await page.goto('https://app.boxmagic.cl'); 
+    // 🔥 IR DIRECTO A UNA RUTA REAL (NO ROOT)
+    await page.goto('https://app.boxmagic.cl/schedules');
 
-    await page.waitForTimeout(8000); // deja cargar SPA
+    // ⏳ Esperar carga real
+    await page.waitForTimeout(10000);
+
+    // 🔥 INTERACCIÓN FORZADA (CLAVE)
+    await page.mouse.move(500, 500);
+    await page.mouse.wheel(0, 500);
+
+    await page.waitForTimeout(5000);
 
     console.log('🏁 Fin del monitor');
 
