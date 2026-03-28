@@ -2,92 +2,55 @@ import { chromium } from 'playwright';
 
 (async () => {
   const browser = await chromium.launch({
-    headless: true // cambia a false si quieres ver qué pasa
+    headless: true
   });
 
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  // 🔥 CAPTURADOR DE APIs
+  // 🔥 FILTRO PROFESIONAL (SOLO APIs REALES)
   page.on('response', async (response) => {
     const url = response.url();
 
-    if (
-      url.includes('/api') ||
-      url.includes('boxmagic') ||
-      url.includes('schedules') ||
-      url.includes('classes')
-    ) {
+    if (url.includes('api-j.boxmagic.app')) {
       try {
         const status = response.status();
-        const body = await response.text();
 
-        console.log('\n🔥 API DETECTADA:', url);
-        console.log('STATUS:', status);
-        console.log('BODY:', body.substring(0, 500)); // evita logs gigantes
+        if (status !== 200) return;
+
+        const contentType = response.headers()['content-type'] || '';
+
+        // SOLO JSON (NO JS, NO HTML)
+        if (!contentType.includes('application/json')) return;
+
+        const body = await response.json();
+
+        console.log('\n🔥 API REAL:', url);
+        console.log('DATA:', JSON.stringify(body, null, 2));
+
       } catch (e) {}
     }
   });
 
-  // 🌐 IR AL LOGIN
   console.log('🌐 Abriendo login...');
-  await page.goto('https://boxmagic.cl/login', {
-    waitUntil: 'domcontentloaded'
-  });
+  await page.goto('https://boxmagic.cl/login');
 
-  // ⏳ esperar que cargue
   await page.waitForTimeout(3000);
 
-  // 🔐 LOGIN (ajusta selectores si cambian)
-  console.log('🔐 Iniciando sesión...');
-
+  console.log('🔐 Login...');
   await page.fill('input[type="email"]', 'TU_EMAIL');
   await page.fill('input[type="password"]', 'TU_PASSWORD');
-
   await page.click('button[type="submit"]');
 
-  // esperar login real
   await page.waitForTimeout(8000);
 
-  console.log('✅ Login realizado');
+  console.log('🚀 Ir a schedules...');
+  await page.goto('https://app.boxmagic.cl/schedules');
 
-  // 🚀 INTENTO DIRECTO A SCHEDULES
-  console.log('🧭 Navegando directo a schedules...');
-  await page.goto('https://app.boxmagic.cl/schedules', {
-    waitUntil: 'domcontentloaded'
-  });
+  // 🔥 IMPORTANTE: esperar actividad real
+  await page.waitForTimeout(15000);
 
-  await page.waitForTimeout(5000);
-
-  // 🔥 FALLBACK: CLICK EN MENÚ SPA
-  console.log('🔎 Buscando botón de agenda/clases...');
-
-  const elements = await page.locator('a, button').all();
-
-  for (const el of elements) {
-    try {
-      const text = (await el.innerText()).toLowerCase();
-
-      if (
-        text.includes('agenda') ||
-        text.includes('clase') ||
-        text.includes('horario') ||
-        text.includes('schedule')
-      ) {
-        console.log('👉 CLICK EN:', text);
-        await el.click();
-        break;
-      }
-    } catch (e) {}
-  }
-
-  // 🧠 activar lazy loading
-  console.log('🖱️ Scrolleando...');
-  await page.mouse.wheel(0, 3000);
-
-  await page.waitForTimeout(10000);
-
-  console.log('🏁 FIN DEL SCRIPT');
+  console.log('🏁 FIN');
 
   await browser.close();
 })();
