@@ -2,7 +2,6 @@ import { chromium } from 'playwright';
 
 const URL = 'https://boxmagic.cl/login';
 
-// 👉 CONFIG (usa variables de entorno en Railway)
 const EMAIL = process.env.BOXMAGIC_EMAIL;
 const PASSWORD = process.env.BOXMAGIC_PASSWORD;
 
@@ -30,10 +29,9 @@ async function runMonitor() {
   const page = await browser.newPage();
 
   try {
-    // 🔹 1. Ir a login
+    // LOGIN
     await safeGoto(page, URL);
 
-    // 🔹 2. Login (ajusta selectores si cambian)
     console.log('🔐 Login...');
     await page.fill('input[type="email"]', EMAIL);
     await page.fill('input[type="password"]', PASSWORD);
@@ -42,26 +40,36 @@ async function runMonitor() {
     await page.waitForLoadState('networkidle');
     console.log('✅ Login OK');
 
-    // 🔹 3. Ir a horarios
+    // IR A HORARIOS
     console.log('📅 Navegando a horarios...');
     await safeGoto(page, 'https://boxmagic.cl/schedules');
 
-    // 🔹 4. Esperar contenido
+    // ESPERAR QUE CARGUE ALGO REAL
     await page.waitForTimeout(5000);
 
-    // 🔹 5. Scroll completo
-    console.log('📜 Scrolleando...');
+    // SCROLL
     await autoScroll(page);
 
-    // 🔹 6. Leer DOM
-    console.log('📖 Leyendo DOM...');
-    const content = await page.content();
+    // 🔥 CLAVE: seleccionar elementos visibles
+    console.log('🔍 Buscando clases reales...');
 
-    // 🔹 7. Buscar clases
-    const matches = extractClasses(content);
+    const classes = await page.$$eval('*', (nodes) =>
+      nodes
+        .map(n => n.innerText)
+        .filter(text =>
+          text &&
+          (
+            text.includes('Entrenamiento') ||
+            text.includes('Personalizado') ||
+            text.includes('No one registered') ||
+            text.includes('cupos')
+          )
+        )
+    );
 
-    console.log(`📊 Clases detectadas: ${matches.length}`);
-    matches.forEach((m) => console.log('👉', m));
+    console.log(`📊 Clases encontradas: ${classes.length}`);
+
+    classes.slice(0, 20).forEach(c => console.log('👉', c));
 
     console.log('🏁 Fin del monitor');
 
@@ -72,7 +80,6 @@ async function runMonitor() {
   }
 }
 
-// 🔽 Scroll automático
 async function autoScroll(page) {
   await page.evaluate(async () => {
     await new Promise((resolve) => {
@@ -92,24 +99,4 @@ async function autoScroll(page) {
   });
 }
 
-// 🔍 Extraer clases relevantes
-function extractClasses(html) {
-  const results = [];
-
-  const keywords = [
-    'Entrenamiento Personalizado',
-    'Personalizado',
-    'Training'
-  ];
-
-  keywords.forEach((k) => {
-    if (html.includes(k)) {
-      results.push(k);
-    }
-  });
-
-  return results;
-}
-
-// ▶️ Ejecutar
 runMonitor();
