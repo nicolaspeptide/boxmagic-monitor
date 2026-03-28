@@ -1,46 +1,72 @@
-import { chromium } from 'playwright';
+const { chromium } = require('playwright');
 
 (async () => {
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
+  const browser = await chromium.launch({
+    headless: false, // 👈 ver lo que pasa (luego puedes poner true)
+  });
 
+  const context = await browser.newContext();
   const page = await context.newPage();
 
-  // 🔥 CAPTURAR REQUESTS
-  page.on('request', req => {
-    if (req.url().includes('api')) {
-      console.log('➡️ REQUEST:', req.method(), req.url());
-      console.log('HEADERS:', req.headers());
+  // 🔥 Capturar TODAS las requests importantes
+  page.on('request', (request) => {
+    const url = request.url();
+
+    if (url.includes('/boxmagic/')) {
+      console.log('\n📤 REQUEST:', url);
+      console.log('METHOD:', request.method());
     }
   });
 
-  page.on('response', async res => {
-    if (res.url().includes('api')) {
+  page.on('response', async (response) => {
+    const url = response.url();
+
+    if (url.includes('/boxmagic/')) {
+      console.log('\n📥 RESPONSE:', url);
+      console.log('STATUS:', response.status());
+
       try {
-        const body = await res.text();
-        console.log('⬅️ RESPONSE:', res.url());
-        console.log(body.slice(0, 500));
-      } catch {}
+        const text = await response.text();
+        console.log('BODY:', text.slice(0, 500)); // corta para no saturar
+      } catch (e) {}
     }
   });
 
-  console.log('🔐 Login...');
+  // 🌐 Ir al login
   await page.goto('https://auth.boxmagic.cl/login');
 
-  await page.fill('input[type="email"]', 'TU_EMAIL');
-  await page.fill('input[type="password"]', 'TU_PASSWORD');
-  await page.click('button[type="submit"]');
+  // ⏳ Esperar inputs
+  await page.waitForSelector('input');
 
-  await page.waitForTimeout(10000);
+  // ⚠️ AJUSTA ESTOS SELECTORES SI CAMBIAN
+  const emailInput = await page.locator('input[type="email"], input[placeholder*="Correo"]');
+  const passInput = await page.locator('input[type="password"]');
 
-  // 🔥 INTENTO DE NAVEGACIÓN
-  try {
-    await page.goto('https://app.boxmagic.cl', { timeout: 10000 });
-  } catch (e) {
-    console.log('⚠️ app bloqueado, pero igual capturamos requests');
-  }
+  await emailInput.fill('TU_CORREO');
+  await passInput.fill('TU_PASSWORD');
 
-  await page.waitForTimeout(10000);
+  // 🔥 Click login
+  await Promise.all([
+    page.waitForNavigation(),
+    page.click('button:has-text("Ingresar"), button[type="submit"]'),
+  ]);
 
-  await browser.close();
+  console.log('\n✅ LOGEADO');
+
+  // ⏳ Esperar que cargue el sistema
+  await page.waitForTimeout(5000);
+
+  // 🔥 Ir directo a schedules (o la página que quieras)
+  await page.goto('https://cualesmi.boxmagic.app/');
+
+  await page.waitForTimeout(5000);
+
+  console.log('\n🎯 YA ESTÁS DENTRO');
+
+  // 👉 Aquí puedes empezar scraping
+  const contenido = await page.content();
+  console.log('\n📄 HTML LENGTH:', contenido.length);
+
+  // ❌ no cerrar si quieres inspeccionar
+  // await browser.close();
 })();
