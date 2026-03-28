@@ -1,12 +1,12 @@
 {
   "name": "boxmagic-monitor",
   "version": "1.0.0",
+  "type": "module",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "playwright": "^1.58.0",
-    "twilio": "^4.0.0"
+    "playwright": "^1.42.0"
   }
 }
