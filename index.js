@@ -1,122 +1,83 @@
 import { chromium } from 'playwright';
 
-async function main() {
+const URL = 'https://boxmagic.cl/login';
+
+// 👉 CONFIG (usa variables de entorno en Railway)
+const EMAIL = process.env.BOXMAGIC_EMAIL;
+const PASSWORD = process.env.BOXMAGIC_PASSWORD;
+
+async function safeGoto(page, url) {
+  for (let i = 0; i < 3; i++) {
+    try {
+      await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+      return;
+    } catch (e) {
+      console.log(`⚠️ Retry ${i + 1}...`);
+      await page.waitForTimeout(2000);
+    }
+  }
+  throw new Error('❌ No se pudo cargar la página');
+}
+
+async function runMonitor() {
+  console.log('🚀 Iniciando monitor...');
 
   const browser = await chromium.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
 
-  const context = await browser.newContext();
-  const page = await context.newPage();
+  const page = await browser.newPage();
 
-  console.log('🚀 Iniciando monitor...');
+  try {
+    // 🔹 1. Ir a login
+    await safeGoto(page, URL);
 
-  // 👉 URL directa a tu dashboard
-  await page.goto('https://app.boxmagic.cl/login', { waitUntil: 'networkidle' });
+    // 🔹 2. Login (ajusta selectores si cambian)
+    console.log('🔐 Login...');
+    await page.fill('input[type="email"]', EMAIL);
+    await page.fill('input[type="password"]', PASSWORD);
+    await page.click('button[type="submit"]');
 
-  // 🔐 LOGIN (AJUSTA SI ES NECESARIO)
-  await page.fill('input[type="email"]', process.env.EMAIL);
-  await page.fill('input[type="password"]', process.env.PASSWORD);
-  await page.click('button[type="submit"]');
+    await page.waitForLoadState('networkidle');
+    console.log('✅ Login OK');
 
-  await page.waitForTimeout(5000);
+    // 🔹 3. Ir a horarios
+    console.log('📅 Navegando a horarios...');
+    await safeGoto(page, 'https://boxmagic.cl/schedules');
 
-  console.log('✅ Login OK');
+    // 🔹 4. Esperar contenido
+    await page.waitForTimeout(5000);
 
-  // 👉 Ir a horarios
-  await page.goto('https://app.boxmagic.cl/schedules', { waitUntil: 'networkidle' });
+    // 🔹 5. Scroll completo
+    console.log('📜 Scrolleando...');
+    await autoScroll(page);
 
-  await page.waitForTimeout(5000);
+    // 🔹 6. Leer DOM
+    console.log('📖 Leyendo DOM...');
+    const content = await page.content();
 
-  console.log('📅 Navegando a horarios...');
+    // 🔹 7. Buscar clases
+    const matches = extractClasses(content);
 
-  // 👉 SCROLL para cargar todo
-  await autoScroll(page);
+    console.log(`📊 Clases detectadas: ${matches.length}`);
+    matches.forEach((m) => console.log('👉', m));
 
-  console.log('📜 Scroll completo');
+    console.log('🏁 Fin del monitor');
 
-  // 👉 LEER DOM REAL
-  const clases = await leerTarjetasDOM(page);
-
-  console.log(`📊 Clases detectadas: ${clases.length}`);
-  console.log(JSON.stringify(clases, null, 2));
-
-  await browser.close();
-
-  console.log('🔴 Fin del monitor');
+  } catch (error) {
+    console.error('❌ ERROR:', error.message);
+  } finally {
+    await browser.close();
+  }
 }
 
-
-// ===============================
-// 🔥 PARSER REAL (EL IMPORTANTE)
-// ===============================
-async function leerTarjetasDOM(page) {
-  return await page.evaluate(() => {
-
-    const texto = document.body.innerText
-      .split('\n')
-      .map(l => l.trim())
-      .filter(Boolean);
-
-    const resultados = [];
-
-    for (let i = 0; i < texto.length; i++) {
-
-      // Detectamos "max" como ancla real
-      if (texto[i].toLowerCase().includes('max')) {
-
-        const max = parseInt(texto[i].match(/\d+/)?.[0] || '0');
-
-        let inscritos = 0;
-        let hora = null;
-
-        // mirar alrededor (contexto)
-        for (let j = i - 6; j <= i + 6; j++) {
-          if (!texto[j]) continue;
-
-          const linea = texto[j].toLowerCase();
-
-          // inscritos
-          if (linea.includes('no one')) {
-            inscritos = 0;
-          }
-
-          if (/^\d+$/.test(texto[j])) {
-            inscritos = parseInt(texto[j]);
-          }
-
-          // hora (captura inicio del rango)
-          const matchHora = texto[j].match(/\d{1,2}:\d{2}(am|pm)/i);
-          if (matchHora) {
-            hora = matchHora[0];
-          }
-        }
-
-        if (hora) {
-          resultados.push({
-            hora,
-            inscritos,
-            max,
-            disponibles: max - inscritos
-          });
-        }
-      }
-    }
-
-    return resultados;
-  });
-}
-
-
-// ===============================
-// 🔄 AUTO SCROLL
-// ===============================
+// 🔽 Scroll automático
 async function autoScroll(page) {
   await page.evaluate(async () => {
     await new Promise((resolve) => {
       let totalHeight = 0;
-      const distance = 300;
+      const distance = 500;
 
       const timer = setInterval(() => {
         window.scrollBy(0, distance);
@@ -131,6 +92,24 @@ async function autoScroll(page) {
   });
 }
 
+// 🔍 Extraer clases relevantes
+function extractClasses(html) {
+  const results = [];
 
-// ===============================
-main();
+  const keywords = [
+    'Entrenamiento Personalizado',
+    'Personalizado',
+    'Training'
+  ];
+
+  keywords.forEach((k) => {
+    if (html.includes(k)) {
+      results.push(k);
+    }
+  });
+
+  return results;
+}
+
+// ▶️ Ejecutar
+runMonitor();
