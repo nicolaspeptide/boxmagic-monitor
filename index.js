@@ -8,43 +8,46 @@ async function runMonitor() {
 
   const browser = await chromium.launch({
     headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage'
-    ]
+    args: ['--no-sandbox']
   });
 
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  let apiDetected = false;
+  let foundClasses = false;
 
-  // 🔥 Capturar API real
+  // 🔥 INTERCEPTAR TODAS LAS RESPUESTAS
   page.on('response', async (res) => {
     const url = res.url();
 
-    if (
-      url.includes('schedule') ||
-      url.includes('class') ||
-      url.includes('booking') ||
-      url.includes('graphql')
-    ) {
-      try {
+    try {
+      const contentType = res.headers()['content-type'] || '';
+
+      if (contentType.includes('application/json')) {
         const data = await res.json();
 
-        console.log('\n📡 API DETECTADA:', url);
-        console.log('📊 DATA:', JSON.stringify(data).slice(0, 1000));
+        const text = JSON.stringify(data);
 
-        apiDetected = true;
+        // 🔥 FILTRO INTELIGENTE
+        if (
+          text.includes('class') ||
+          text.includes('schedule') ||
+          text.includes('booking') ||
+          text.includes('slot')
+        ) {
+          console.log('\n📡 POSIBLE API DE CLASES');
+          console.log('URL:', url);
+          console.log('DATA:', text.slice(0, 1500));
 
-      } catch {}
-    }
+          foundClasses = true;
+        }
+      }
+
+    } catch {}
   });
 
   try {
-    // 🌐 Test red
-    console.log('🌐 Probando conexión...');
+    // 🌐 Test internet
     await page.goto('https://google.com');
     console.log('✅ Internet OK');
 
@@ -59,40 +62,27 @@ async function runMonitor() {
 
     console.log('✅ Login OK');
 
-    // 🔥 Ir a schedules
+    // 📍 SCHEDULES
     await page.goto('https://boxmagic.cl/schedules');
 
     console.log('📍 Entrando a schedules...');
 
-    await page.waitForTimeout(6000);
+    // ⏱️ tiempo para que frontend dispare APIs
+    await page.waitForTimeout(10000);
 
-    // 🔥 FORZAR ACTIVACIÓN FRONTEND
-    await page.mouse.wheel(0, 4000);
-    await page.waitForTimeout(2000);
+    // 🔥 FORZAR INTERACCIONES
+    await page.mouse.move(300, 300);
+    await page.mouse.wheel(0, 3000);
+    await page.waitForTimeout(3000);
 
     await page.mouse.wheel(0, -2000);
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(3000);
 
-    await page.click('body').catch(() => {});
-    await page.waitForTimeout(4000);
-
-    // 🔥 FALLBACK: SI NO HAY API → EXTRAER HTML
-    if (!apiDetected) {
-      console.log('⚠️ No se detectó API, intentando DOM...');
-
-      const html = await page.content();
-
-      // Buscar texto relevante
-      const matches = html.match(/Entrenamiento|Clase|Horario/gi);
-
-      if (matches) {
-        console.log(`📊 Coincidencias en HTML: ${matches.length}`);
-      } else {
-        console.log('❌ No se encontraron clases en DOM');
-      }
+    if (!foundClasses) {
+      console.log('❌ No se detectaron APIs con clases');
+    } else {
+      console.log('✅ Clases detectadas vía API');
     }
-
-    console.log('🏁 Fin del monitor');
 
   } catch (err) {
     console.error('❌ ERROR:', err.message);
