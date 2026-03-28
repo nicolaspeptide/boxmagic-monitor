@@ -15,7 +15,6 @@ const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
 const AVISOS_FILE = '/app/avisos_enviados.json';
 
-// Slots objetivo
 const SLOTS = [
   { dia: 1, hora: '19:00', nombre: 'Lunes 19h' },
   { dia: 1, hora: '20:00', nombre: 'Lunes 20h' },
@@ -73,7 +72,15 @@ async function leerTarjetasDOM(page) {
     const resultados = [];
 
     const elementos = Array.from(document.querySelectorAll('*'))
-      .filter(el => el.innerText && el.innerText.includes('Participants'));
+      .filter(el => {
+        const t = el.innerText || '';
+        return (
+          t.includes('Participants') ||
+          t.includes('participants') ||
+          t.includes('max') ||
+          t.includes('Max')
+        );
+      });
 
     for (const el of elementos) {
       const contenedor = el.closest('div');
@@ -81,13 +88,14 @@ async function leerTarjetasDOM(page) {
 
       const texto = contenedor.innerText;
 
-      const match = texto.match(/(\d+)\s*max.*?(\d+)\s*Participants.*?(\d{1,2}:\d{2}(am|pm))/i);
+      // Regex más flexible
+      const match = texto.match(/(\d+)\s*(max|Max).*?(\d+).*?(Participants|participants).*?(\d{1,2}:\d{2}(am|pm))/i);
 
       if (!match) continue;
 
       const max = parseInt(match[1]);
-      const inscritos = parseInt(match[2]);
-      const hora = match[3];
+      const inscritos = parseInt(match[3]);
+      const hora = match[5];
 
       resultados.push({
         texto,
@@ -107,25 +115,16 @@ async function leerTarjetasDOM(page) {
 (async () => {
   log('🚀 Iniciando monitor...');
 
-  if (!EMAIL || !PASSWORD) {
-    log('❌ Faltan variables de entorno BOXMAGIC_EMAIL / PASSWORD');
-    process.exit(1);
-  }
-
   const browser = await chromium.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
 
-  const context = await browser.newContext({
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
-  });
-
+  const context = await browser.newContext();
   const page = await context.newPage();
 
   try {
-    // ================= LOGIN =================
+    // LOGIN
     log('🔐 Login...');
     await page.goto('https://members.boxmagic.app/a/g?o=pi-e', { waitUntil: 'networkidle' });
 
@@ -139,19 +138,36 @@ async function leerTarjetasDOM(page) {
 
     log('✅ Login OK');
 
-    // ================= HORARIOS =================
+    // HORARIOS
     log('📅 Navegando a horarios...');
     await page.goto('https://members.boxmagic.app/a/g/oGDPQaGLb5/horarios', {
       waitUntil: 'networkidle'
     });
 
-    await sleep(5000);
+    // 👇 ESPERA INTELIGENTE
+    log('⏳ Esperando render...');
+    try {
+      await page.waitForFunction(() => {
+        return document.body.innerText.length > 1000;
+      }, { timeout: 15000 });
+    } catch {
+      log('⚠️ Timeout esperando contenido');
+    }
 
-    // ================= SCRAPING =================
+    await sleep(3000);
+
+    // SCRAPING
     log('🔎 Leyendo DOM...');
     const clases = await leerTarjetasDOM(page);
 
     log(`📊 Clases detectadas: ${clases.length}`);
+
+    if (clases.length === 0) {
+      log('🚨 DEBUG: imprimiendo HTML parcial...');
+      const texto = await page.evaluate(() => document.body.innerText);
+      console.log(texto.slice(0, 3000));
+    }
+
     console.log(JSON.stringify(clases, null, 2));
 
     const avisos = cargarAvisos();
@@ -175,8 +191,6 @@ async function leerTarjetasDOM(page) {
         if (!avisos[key]) {
           await enviarWhatsApp(`🔥 CUPO DISPONIBLE: ${slot.nombre}`);
           avisos[key] = true;
-        } else {
-          log(`🔁 Ya avisado: ${slot.nombre}`);
         }
       }
     }
