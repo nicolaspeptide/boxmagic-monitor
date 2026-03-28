@@ -18,9 +18,11 @@ async function runMonitor() {
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  // 🔥 VER TODO EL TRÁFICO (clave)
-  page.on('request', req => {
-    const url = req.url();
+  let apiDetected = false;
+
+  // 🔥 Capturar API real
+  page.on('response', async (res) => {
+    const url = res.url();
 
     if (
       url.includes('schedule') ||
@@ -28,23 +30,20 @@ async function runMonitor() {
       url.includes('booking') ||
       url.includes('graphql')
     ) {
-      console.log('📡 REQUEST:', url);
-    }
-  });
-
-  page.on('response', async res => {
-    const url = res.url();
-
-    if (url.includes('schedule') || url.includes('class')) {
       try {
         const data = await res.json();
-        console.log('📊 DATA:', JSON.stringify(data).slice(0, 500));
+
+        console.log('\n📡 API DETECTADA:', url);
+        console.log('📊 DATA:', JSON.stringify(data).slice(0, 1000));
+
+        apiDetected = true;
+
       } catch {}
     }
   });
 
   try {
-    // 🌐 TEST INTERNET
+    // 🌐 Test red
     console.log('🌐 Probando conexión...');
     await page.goto('https://google.com');
     console.log('✅ Internet OK');
@@ -60,38 +59,38 @@ async function runMonitor() {
 
     console.log('✅ Login OK');
 
-    // 🔥 IR A SCHEDULES
+    // 🔥 Ir a schedules
     await page.goto('https://boxmagic.cl/schedules');
 
     console.log('📍 Entrando a schedules...');
 
-    // 🔥 ESPERA BASE
+    await page.waitForTimeout(6000);
+
+    // 🔥 FORZAR ACTIVACIÓN FRONTEND
+    await page.mouse.wheel(0, 4000);
+    await page.waitForTimeout(2000);
+
+    await page.mouse.wheel(0, -2000);
+    await page.waitForTimeout(2000);
+
+    await page.click('body').catch(() => {});
     await page.waitForTimeout(4000);
 
-    // 🔥 INTERACCIÓN REAL (ESTO ES LO CLAVE)
+    // 🔥 FALLBACK: SI NO HAY API → EXTRAER HTML
+    if (!apiDetected) {
+      console.log('⚠️ No se detectó API, intentando DOM...');
 
-    // Scroll fuerte
-    await page.mouse.wheel(0, 3000);
-    await page.waitForTimeout(2000);
+      const html = await page.content();
 
-    // Scroll inverso
-    await page.mouse.wheel(0, -1500);
-    await page.waitForTimeout(2000);
+      // Buscar texto relevante
+      const matches = html.match(/Entrenamiento|Clase|Horario/gi);
 
-    // Clicks en divs (React trigger)
-    const divs = await page.$$('div');
-    for (let i = 0; i < Math.min(divs.length, 5); i++) {
-      await divs[i].click().catch(() => {});
-      await page.waitForTimeout(500);
+      if (matches) {
+        console.log(`📊 Coincidencias en HTML: ${matches.length}`);
+      } else {
+        console.log('❌ No se encontraron clases en DOM');
+      }
     }
-
-    // Hover (MUY importante en apps modernas)
-    const body = await page.$('body');
-    if (body) {
-      await body.hover();
-    }
-
-    await page.waitForTimeout(5000);
 
     console.log('🏁 Fin del monitor');
 
