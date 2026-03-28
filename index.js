@@ -14,24 +14,20 @@ async function runMonitor() {
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  // 🔥 INTERCEPTAR TODO LO ÚTIL
+  // 🔥 Interceptar TODO
   page.on('request', req => {
-    if (req.url().includes('api') || req.url().includes('class')) {
-      console.log('📡 REQUEST:', req.method(), req.url());
-    }
+    console.log('📡', req.method(), req.url());
   });
 
   page.on('response', async res => {
-    const url = res.url();
-
-    if (url.includes('api') || url.includes('class')) {
-      console.log('📥 RESPONSE:', url);
-
-      try {
+    try {
+      const url = res.url();
+      if (url.includes('api')) {
+        console.log('📥', url);
         const text = await res.text();
         console.log(text.slice(0, 1000));
-      } catch (e) {}
-    }
+      }
+    } catch (e) {}
   });
 
   try {
@@ -45,16 +41,12 @@ async function runMonitor() {
     await page.waitForLoadState('networkidle');
     console.log('✅ Login OK');
 
-    // 🔥 IR DIRECTO A UNA RUTA REAL (NO ROOT)
-    await page.goto('https://app.boxmagic.cl/schedules');
+    // 🔥 SOLO ROOT (NO app.)
+    await page.goto('https://boxmagic.cl');
 
-    // ⏳ Esperar carga real
+    // 🔥 Esperar + interacción
     await page.waitForTimeout(10000);
-
-    // 🔥 INTERACCIÓN FORZADA (CLAVE)
-    await page.mouse.move(500, 500);
     await page.mouse.wheel(0, 500);
-
     await page.waitForTimeout(5000);
 
     console.log('🏁 Fin del monitor');
