@@ -15,6 +15,7 @@ async function runMonitor() {
   const page = await context.newPage();
 
   try {
+    // LOGIN
     await page.goto('https://boxmagic.cl/login');
 
     await page.fill('input[type="email"]', EMAIL);
@@ -25,27 +26,31 @@ async function runMonitor() {
 
     console.log('✅ Login OK');
 
-    // 🔥 EXTRAER COOKIES
+    // 🔥 EXTRAER XSRF TOKEN
     const cookies = await context.cookies();
+    const xsrf = cookies.find(c => c.name === 'XSRF-TOKEN');
 
-    console.log('\n🍪 COOKIES DE SESIÓN:');
-    console.log(JSON.stringify(cookies, null, 2));
+    if (!xsrf) {
+      console.log('❌ No XSRF token');
+      return;
+    }
 
-    // 🔥 EXTRAER LOCAL STORAGE
-    const storage = await page.evaluate(() => {
-      return Object.assign({}, localStorage);
+    console.log('🔐 XSRF encontrado');
+
+    // 🔥 USAR REQUEST INTERNO (clave)
+    const request = await context.request;
+
+    const res = await request.get('https://boxmagic.cl/schedules', {
+      headers: {
+        'x-xsrf-token': decodeURIComponent(xsrf.value),
+        'accept': 'application/json'
+      }
     });
 
-    console.log('\n📦 LOCAL STORAGE:');
-    console.log(storage);
+    const text = await res.text();
 
-    // 🔥 EXTRAER SESSION STORAGE
-    const session = await page.evaluate(() => {
-      return Object.assign({}, sessionStorage);
-    });
-
-    console.log('\n📦 SESSION STORAGE:');
-    console.log(session);
+    console.log('\n📡 RESPUESTA RAW:');
+    console.log(text.slice(0, 2000));
 
   } catch (err) {
     console.error('❌ ERROR:', err.message);
