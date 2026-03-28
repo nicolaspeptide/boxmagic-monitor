@@ -5,20 +5,6 @@ import { chromium } from 'playwright';
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  page.on('response', async (response) => {
-    const url = response.url();
-
-    if (url.includes('api-j.boxmagic.app')) {
-      try {
-        const json = await response.json();
-
-        console.log('\n🔥 API:', url);
-        console.log(JSON.stringify(json, null, 2));
-
-      } catch (e) {}
-    }
-  });
-
   console.log('🔐 Login...');
   await page.goto('https://auth.boxmagic.cl/login');
 
@@ -26,9 +12,30 @@ import { chromium } from 'playwright';
   await page.fill('input[type="password"]', 'TU_PASSWORD');
   await page.click('button[type="submit"]');
 
-  await page.waitForTimeout(10000);
+  await page.waitForTimeout(8000);
 
-  console.log('🏁 FIN (sin navegar a schedules)');
+  // 🔥 EXTRAER TOKEN
+  const token = await page.evaluate(() => {
+    return localStorage.getItem('token') ||
+           sessionStorage.getItem('token');
+  });
+
+  console.log('🧠 TOKEN:', token);
+
+  // 🔥 LLAMADA DIRECTA A API
+  const data = await page.evaluate(async (token) => {
+    const res = await fetch('https://api-j.boxmagic.app/boxmagic/schedules', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    return res.json();
+  }, token);
+
+  console.log('🔥 DATA REAL:', JSON.stringify(data, null, 2));
 
   await browser.close();
 })();
