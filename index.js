@@ -8,13 +8,17 @@ async function runMonitor() {
 
   const browser = await chromium.launch({
     headless: true,
-    args: ['--no-sandbox']
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage'
+    ]
   });
 
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  // 🔥 ESCUCHAR TODAS LAS RESPUESTAS
+  // 🔥 Interceptar APIs
   page.on('response', async (response) => {
     const url = response.url();
 
@@ -39,13 +43,22 @@ async function runMonitor() {
           console.log('📦 Data:', JSON.stringify(data).slice(0, 500));
         }
 
-      } catch (e) {}
+      } catch (e) {
+        // silencioso (no todas las respuestas son JSON)
+      }
     }
   });
 
   try {
-    // LOGIN
-    await page.goto('https://app.boxmagic.cl/login');
+    // 🌐 Test conexión
+    console.log('🌐 Probando conexión...');
+    await page.goto('https://google.com');
+    console.log('✅ Internet OK');
+
+    // 🔐 LOGIN
+    await page.goto('https://boxmagic.cl/login', {
+      waitUntil: 'domcontentloaded'
+    });
 
     await page.fill('input[type="email"]', EMAIL);
     await page.fill('input[type="password"]', PASSWORD);
@@ -55,23 +68,22 @@ async function runMonitor() {
 
     console.log('✅ Login OK');
 
-    // 🔥 PASO CRÍTICO 1: ir a schedules REAL
-    await page.goto('https://app.boxmagic.cl/schedules', {
+    // 🔥 Ir a horarios
+    await page.goto('https://boxmagic.cl/schedules', {
       waitUntil: 'domcontentloaded'
     });
 
     console.log('📍 Entrando a schedules...');
 
-    // 🔥 PASO CRÍTICO 2: esperar carga real
+    // ⏱️ Esperar carga
     await page.waitForTimeout(5000);
 
-    // 🔥 PASO CRÍTICO 3: interacción (clave)
+    // 🖱️ Forzar interacción (clave en apps React)
     await page.mouse.wheel(0, 2000);
     await page.waitForTimeout(2000);
 
-    // 🔥 PASO CRÍTICO 4: click en algo visible
+    // 🖱️ Click genérico (dispara queries internas)
     const botones = await page.$$('button');
-
     if (botones.length > 0) {
       await botones[0].click().catch(() => {});
       console.log('🖱️ Click disparado');
