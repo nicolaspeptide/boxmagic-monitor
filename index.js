@@ -14,44 +14,7 @@ async function runMonitor() {
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  let foundClasses = false;
-
-  // 🔥 INTERCEPTAR TODAS LAS RESPUESTAS
-  page.on('response', async (res) => {
-    const url = res.url();
-
-    try {
-      const contentType = res.headers()['content-type'] || '';
-
-      if (contentType.includes('application/json')) {
-        const data = await res.json();
-
-        const text = JSON.stringify(data);
-
-        // 🔥 FILTRO INTELIGENTE
-        if (
-          text.includes('class') ||
-          text.includes('schedule') ||
-          text.includes('booking') ||
-          text.includes('slot')
-        ) {
-          console.log('\n📡 POSIBLE API DE CLASES');
-          console.log('URL:', url);
-          console.log('DATA:', text.slice(0, 1500));
-
-          foundClasses = true;
-        }
-      }
-
-    } catch {}
-  });
-
   try {
-    // 🌐 Test internet
-    await page.goto('https://google.com');
-    console.log('✅ Internet OK');
-
-    // 🔐 LOGIN
     await page.goto('https://boxmagic.cl/login');
 
     await page.fill('input[type="email"]', EMAIL);
@@ -62,27 +25,27 @@ async function runMonitor() {
 
     console.log('✅ Login OK');
 
-    // 📍 SCHEDULES
-    await page.goto('https://boxmagic.cl/schedules');
+    // 🔥 EXTRAER COOKIES
+    const cookies = await context.cookies();
 
-    console.log('📍 Entrando a schedules...');
+    console.log('\n🍪 COOKIES DE SESIÓN:');
+    console.log(JSON.stringify(cookies, null, 2));
 
-    // ⏱️ tiempo para que frontend dispare APIs
-    await page.waitForTimeout(10000);
+    // 🔥 EXTRAER LOCAL STORAGE
+    const storage = await page.evaluate(() => {
+      return Object.assign({}, localStorage);
+    });
 
-    // 🔥 FORZAR INTERACCIONES
-    await page.mouse.move(300, 300);
-    await page.mouse.wheel(0, 3000);
-    await page.waitForTimeout(3000);
+    console.log('\n📦 LOCAL STORAGE:');
+    console.log(storage);
 
-    await page.mouse.wheel(0, -2000);
-    await page.waitForTimeout(3000);
+    // 🔥 EXTRAER SESSION STORAGE
+    const session = await page.evaluate(() => {
+      return Object.assign({}, sessionStorage);
+    });
 
-    if (!foundClasses) {
-      console.log('❌ No se detectaron APIs con clases');
-    } else {
-      console.log('✅ Clases detectadas vía API');
-    }
+    console.log('\n📦 SESSION STORAGE:');
+    console.log(session);
 
   } catch (err) {
     console.error('❌ ERROR:', err.message);
