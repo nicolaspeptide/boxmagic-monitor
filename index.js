@@ -4,12 +4,16 @@ import { chromium } from 'playwright';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// 🔹 ROOT (IMPORTANTE para Railway)
 app.get('/', (req, res) => {
-  res.send('boxmagic-monitor activo');
+  res.send('🚀 boxmagic-monitor activo');
 });
 
+// 🔹 RUN (tu bot)
 app.get('/run', async (req, res) => {
   try {
+    console.log('🔥 Ejecutando Playwright...');
+
     const browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
 
@@ -19,6 +23,7 @@ app.get('/run', async (req, res) => {
     await browser.close();
 
     console.log('✅ Título:', title);
+
     res.send(`OK - ${title}`);
   } catch (err) {
     console.error('❌ Error:', err.message);
@@ -26,6 +31,7 @@ app.get('/run', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+// 🚨 MUY IMPORTANTE: escuchar en 0.0.0.0
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 boxmagic-monitor corriendo en puerto ${PORT}`);
 });
