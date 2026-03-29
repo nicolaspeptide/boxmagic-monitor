@@ -38,6 +38,16 @@ const WEEKDAY_ALIASES = {
   sunday: ["sunday", "sun", "domingo", "dom"],
 };
 
+const DAY_TAB_LABELS = {
+  monday: ["MON", "MONDAY", "LUN", "LUNES"],
+  tuesday: ["TUE", "TUESDAY", "MAR", "MARTES"],
+  wednesday: ["WED", "WEDNESDAY", "MIE", "MIÉ", "MIERCOLES", "MIÉRCOLES"],
+  thursday: ["THU", "THURSDAY", "JUE", "JUEVES"],
+  friday: ["FRI", "FRIDAY", "VIE", "VIERNES"],
+  saturday: ["SAT", "SATURDAY", "SAB", "SÁB", "SABADO", "SÁBADO"],
+  sunday: ["SUN", "SUNDAY", "DOM", "DOMINGO"],
+};
+
 function log(msg) {
   console.log(`${new Date().toISOString()} ${msg}`);
 }
@@ -73,33 +83,6 @@ function uniqueBy(arr, keyFn) {
   return out;
 }
 
-function getTomorrowWeekday() {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  return [
-    "sunday",
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-  ][d.getDay()];
-}
-
-function detectWeekday(text) {
-  const t = normalize(text);
-
-  if (t.includes("tomorrow")) return getTomorrowWeekday();
-  if (t.includes("manana") || t.includes("mañana")) return getTomorrowWeekday();
-
-  for (const [weekday, aliases] of Object.entries(WEEKDAY_ALIASES)) {
-    if (aliases.some((a) => t.includes(normalize(a)))) return weekday;
-  }
-
-  return null;
-}
-
 function extractHours(text) {
   const t = normalize(text);
   const out = new Set();
@@ -118,10 +101,10 @@ function extractHours(text) {
     out.add(h);
   }
 
-  const isolatedHourRegex = /\b(\d{1,2})\s*(?:pm|am)\b/gi;
-  while ((m = isolatedHourRegex.exec(t)) !== null) {
+  const isolated = /\b(\d{1,2})\s*(am|pm)\b/gi;
+  while ((m = isolated.exec(t)) !== null) {
     let h = Number(m[1]);
-    const ampm = t.slice(m.index).match(/\b(pm|am)\b/i)?.[1]?.toLowerCase() || "";
+    const ampm = (m[2] || "").toLowerCase();
     if (ampm === "pm" && h < 12) h += 12;
     if (ampm === "am" && h === 12) h = 0;
     out.add(h);
@@ -163,21 +146,15 @@ function extractAvailability(text) {
 
 function detectAlreadyBooked(text) {
   const t = normalize(text);
+
   return (
     t.includes("already booked") ||
     t.includes("reservado") ||
     t.includes("booked") ||
     t.includes("inscrito") ||
     t.includes("scheduled by you") ||
-    t.includes("next scheduled session") ||
-    t.includes("find your reservations in your agenda")
-  );
-}
-
-function isTargetSlot(weekday, hours) {
-  return TARGET_SLOTS.some(
-    (slot) =>
-      slot.weekday === weekday && hours.some((hour) => slot.hours.includes(hour))
+    t.includes("your reservation") ||
+    t.includes("my schedule")
   );
 }
 
@@ -338,8 +315,68 @@ async function goToSchedules(page) {
   log(`📝 Texto visible horarios: ${txt.slice(0, 2500)}`);
 }
 
-async function collectDomCandidates(page) {
-  const raw = await page.evaluate(() => {
+async function listVisibleDayTabs(page) {
+  const tabs = await page.evaluate(() => {
+    function visible(el) {
+      const st = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return (
+        st.display !== "none" &&
+        st.visibility !== "hidden" &&
+        Number(st.opacity || "1") > 0 &&
+        rect.width > 0 &&
+        rect.height > 0
+      );
+    }
+
+    const all = Array.from(
+      document.querySelectorAll("button, a, div, span")
+    ).filter(visible);
+
+    return all
+      .map((el) => ({
+        text: (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim(),
+      }))
+      .filter((x) => x.text.length > 0 && x.text.length <= 30);
+  });
+
+  const uniq = uniqueBy(tabs, (x) => normalize(x.text));
+  log(`📚 Tabs visibles: ${uniq.map((x) => x.text).join(" | ").slice(0, 1000)}`);
+  return uniq;
+}
+
+async function clickDayTab(page, weekday) {
+  const labels = DAY_TAB_LABELS[weekday] || [];
+  log(`📆 Intentando abrir día: ${weekday} (${labels.join(", ")})`);
+
+  for (const label of labels) {
+    const selectors = [
+      `button:has-text("${label}")`,
+      `a:has-text("${label}")`,
+      `div:has-text("${label}")`,
+      `span:has-text("${label}")`,
+      `text=${label}`,
+    ];
+
+    for (const selector of selectors) {
+      const locator = page.locator(selector).first();
+      if ((await locator.count()) > 0) {
+        try {
+          await locator.click({ timeout: 2500 });
+          await page.waitForTimeout(2500);
+          log(`✅ Día abierto con selector: ${selector}`);
+          return true;
+        } catch {}
+      }
+    }
+  }
+
+  log(`⚪ No pude abrir tab para ${weekday}`);
+  return false;
+}
+
+async function collectSessionBlocks(page) {
+  const items = await page.evaluate(() => {
     function normalizeText(s = "") {
       return String(s || "")
         .replace(/\u00a0/g, " ")
@@ -351,7 +388,6 @@ async function collectDomCandidates(page) {
       const st = window.getComputedStyle(el);
       const rect = el.getBoundingClientRect();
       return (
-        st &&
         st.display !== "none" &&
         st.visibility !== "hidden" &&
         Number(st.opacity || "1") > 0 &&
@@ -360,7 +396,7 @@ async function collectDomCandidates(page) {
       );
     }
 
-    function matchesClassSignal(text) {
+    function looksLikeSession(text) {
       const t = text.toLowerCase();
       return (
         /\d{1,2}(?::\d{2})?\s*(am|pm)?\s*(to|-|a)\s*\d{1,2}(?::\d{2})?\s*(am|pm)?/i.test(text) &&
@@ -368,13 +404,13 @@ async function collectDomCandidates(page) {
           t.includes("full capacity") ||
           t.includes("no one registered") ||
           t.includes("available") ||
-          t.includes("registered") ||
           t.includes("members") ||
           t.includes("in person") ||
           t.includes("scheduled") ||
           t.includes("session") ||
           t.includes("entrenamiento") ||
-          t.includes("capacidad")
+          t.includes("capacidad") ||
+          t.includes("registered")
         )
       );
     }
@@ -382,61 +418,43 @@ async function collectDomCandidates(page) {
     const selectors = [
       "article",
       "section",
-      "div",
       "li",
-      "[role='button']",
       "[role='listitem']",
       "[class*='card']",
       "[class*='item']",
-      "[class*='slot']",
+      "[class*='session']",
       "[class*='schedule']",
-      "[class*='session']"
+      "[class*='slot']",
+      "div"
     ];
 
-    const elements = Array.from(document.querySelectorAll(selectors.join(",")))
+    const nodes = Array.from(document.querySelectorAll(selectors.join(",")))
       .filter(visible)
       .map((el) => {
         const text = normalizeText(el.innerText || el.textContent || "");
         const rect = el.getBoundingClientRect();
-
         return {
           text,
-          tag: el.tagName,
-          cls: el.className || "",
           x: Math.round(rect.x),
           y: Math.round(rect.y),
           w: Math.round(rect.width),
           h: Math.round(rect.height),
+          tag: el.tagName,
+          cls: String(el.className || ""),
         };
       })
-      .filter((x) => x.text.length >= 10 && x.text.length <= 800)
-      .filter((x) => matchesClassSignal(x.text));
+      .filter((x) => x.text.length >= 8 && x.text.length <= 800)
+      .filter((x) => looksLikeSession(x.text));
 
-    return elements;
+    return nodes;
   });
 
-  return uniqueBy(raw, (x) => `${x.y}|${normalize(x.text)}`);
+  return uniqueBy(items, (x) => `${x.y}|${normalize(x.text)}`);
 }
 
-function inferWeekdayFromContext(candidateText, bodyText) {
-  const nCandidate = normalize(candidateText);
-  const nBody = normalize(bodyText);
-  const idx = nBody.indexOf(nCandidate.slice(0, Math.min(80, nCandidate.length)));
-
-  if (idx === -1) {
-    return detectWeekday(candidateText);
-  }
-
-  const left = Math.max(0, idx - 300);
-  const right = Math.min(nBody.length, idx + nCandidate.length + 300);
-  const context = nBody.slice(left, right);
-
-  return detectWeekday(context) || detectWeekday(candidateText);
-}
-
-function parseCandidate(text, bodyText = "") {
+function parseSessionCandidate(text, forcedWeekday) {
   return {
-    weekday: inferWeekdayFromContext(text, bodyText),
+    weekday: forcedWeekday,
     hours: extractHours(text),
     availability: extractAvailability(text),
     alreadyBooked: detectAlreadyBooked(text),
@@ -444,40 +462,60 @@ function parseCandidate(text, bodyText = "") {
   };
 }
 
-async function reviewClasses(page) {
-  log("🔎 Revisando clases...");
+function isTargetSlot(weekday, hours) {
+  return TARGET_SLOTS.some(
+    (slot) =>
+      slot.weekday === weekday && hours.some((hour) => slot.hours.includes(hour))
+  );
+}
 
-  const fullText = await safeBodyText(page);
-  const domCandidates = await collectDomCandidates(page);
+async function reviewClassesDayByDay(page) {
+  log("🔎 Revisando clases día-por-día...");
+  await listVisibleDayTabs(page);
 
-  log(`🧩 Candidatos DOM recolectados: ${domCandidates.length}`);
+  const allParsed = [];
 
-  for (const c of domCandidates.slice(0, 50)) {
-    log(`🧱 DOM CANDIDATO: ${JSON.stringify(c)}`);
+  for (const target of TARGET_SLOTS) {
+    log(`➡️ Procesando día objetivo: ${target.weekday}`);
+
+    const opened = await clickDayTab(page, target.weekday);
+    if (!opened) {
+      continue;
+    }
+
+    const pageText = await safeBodyText(page);
+    log(`📝 Texto visible ${target.weekday}: ${pageText.slice(0, 1200)}`);
+
+    const rawBlocks = await collectSessionBlocks(page);
+    log(`🧩 Bloques sesión ${target.weekday}: ${rawBlocks.length}`);
+
+    for (const block of rawBlocks) {
+      log(`🧱 BLOQUE ${target.weekday}: ${JSON.stringify(block)}`);
+    }
+
+    const parsed = rawBlocks
+      .map((b) => parseSessionCandidate(b.text, target.weekday))
+      .filter((x) => x.hours.length > 0)
+      .filter((x) => isTargetSlot(x.weekday, x.hours));
+
+    for (const item of parsed) {
+      log(`🎯 OBJETIVO ${target.weekday}: ${JSON.stringify(item)}`);
+    }
+
+    allParsed.push(...parsed);
   }
 
-  let parsed = domCandidates.map((c) => parseCandidate(c.text, fullText));
-
-  parsed = uniqueBy(parsed, (x) => normalize(x.text));
-
-  for (const p of parsed) {
-    log(`🧪 CANDIDATO ${p.weekday || "null"}: ${JSON.stringify(p)}`);
-  }
-
-  const targets = parsed.filter(
-    (c) => c.weekday && c.hours.length && isTargetSlot(c.weekday, c.hours)
+  const uniqueParsed = uniqueBy(
+    allParsed,
+    (x) => `${x.weekday}|${x.hours.join(",")}|${normalize(x.text)}`
   );
 
-  for (const t of targets) {
-    log(`🎯 OBJETIVO: ${JSON.stringify(t)}`);
-  }
-
-  if (!targets.length) {
+  if (!uniqueParsed.length) {
     log("⚪ No encontré clases en horarios objetivo");
     return;
   }
 
-  const actionable = targets.filter(
+  const actionable = uniqueParsed.filter(
     (c) => c.availability.available === true && c.alreadyBooked === false
   );
 
@@ -513,7 +551,7 @@ async function main() {
 
     await login(page);
     await goToSchedules(page);
-    await reviewClasses(page);
+    await reviewClassesDayByDay(page);
 
     await browser.close();
     log("🟢 Proceso completado");
