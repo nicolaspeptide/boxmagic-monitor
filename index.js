@@ -1,497 +1,520 @@
 import { chromium } from "playwright";
 import twilio from "twilio";
 
-const {
-  BOXMAGIC_EMAIL,
-  BOXMAGIC_PASSWORD,
-  BOXMAGIC_ENTRY_URL,
-  TWILIO_ACCOUNT_SID,
-  TWILIO_AUTH_TOKEN,
-  TWILIO_WHATSAPP_FROM,
-  TWILIO_WHATSAPP_TO,
-} = process.env;
+const CONFIG = {
+  entryUrl:
+    process.env.BOXMAGIC_ENTRY_URL ||
+    "https://members.boxmagic.app/a/g/oGDPQaGLb5/perfil?o=a-iugpd",
 
-const TARGET_SLOTS = [
+  email: process.env.BOXMAGIC_EMAIL,
+  password: process.env.BOXMAGIC_PASSWORD,
+
+  whatsappEnabled:
+    String(process.env.WHATSAPP_ENABLED || "false").toLowerCase() === "true",
+
+  twilioSid: process.env.TWILIO_ACCOUNT_SID,
+  twilioToken: process.env.TWILIO_AUTH_TOKEN,
+  twilioFrom: process.env.TWILIO_WHATSAPP_FROM, // ej: whatsapp:+14155238886
+  whatsappTo: process.env.WHATSAPP_TO, // ej: whatsapp:+569XXXXXXXX
+
+  headless: true,
+  slowMo: 0,
+  timeoutMs: 30000,
+};
+
+const PREFERRED_SLOTS = [
   { weekday: "monday", hours: [19, 20] },
   { weekday: "tuesday", hours: [19, 20] },
   { weekday: "wednesday", hours: [20] },
   { weekday: "friday", hours: [19] },
 ];
 
-const DEBUG = true;
+const WEEKDAY_MAP = {
+  lunes: "monday",
+  monday: "monday",
+  martes: "tuesday",
+  tuesday: "tuesday",
+  miércoles: "wednesday",
+  miercoles: "wednesday",
+  wednesday: "wednesday",
+  jueves: "thursday",
+  thursday: "thursday",
+  viernes: "friday",
+  friday: "friday",
+  sábado: "saturday",
+  sabado: "saturday",
+  saturday: "saturday",
+  domingo: "sunday",
+  sunday: "sunday",
+};
 
-function log(message) {
-  console.log(`${new Date().toISOString()} ${message}`);
+function log(msg) {
+  console.log(`${new Date().toISOString()} ${msg}`);
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function normalizeText(text = "") {
+function cleanText(text = "") {
   return text
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
+    .replace(/\u00a0/g, " ")
     .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-function safeText(text = "") {
-  return (text || "").replace(/\s+/g, " ").trim();
-}
-
-function stripHtml(html = "") {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
     .trim();
 }
 
-function parseHourCandidates(text) {
-  const normalized = normalizeText(text);
-  const results = new Set();
-
-  const hourRegexes = [
-    /\b([01]?\d|2[0-3])[:.](\d{2})\s*(am|pm)?\b/g,
-    /\b([01]?\d|2[0-3])\s*(am|pm)\b/g,
-    /\b([01]?\d|2[0-3])h\b/g,
-  ];
-
-  for (const regex of hourRegexes) {
-    let match;
-    while ((match = regex.exec(normalized)) !== null) {
-      if (regex.source.includes("[:.]")) {
-        let hour = parseInt(match[1], 10);
-        const suffix = match[3];
-        if (suffix === "pm" && hour < 12) hour += 12;
-        if (suffix === "am" && hour === 12) hour = 0;
-        results.add(hour);
-      } else if (regex.source.includes("(am|pm)")) {
-        let hour = parseInt(match[1], 10);
-        const suffix = match[2];
-        if (suffix === "pm" && hour < 12) hour += 12;
-        if (suffix === "am" && hour === 12) hour = 0;
-        results.add(hour);
-      } else {
-        results.add(parseInt(match[1], 10));
-      }
-    }
-  }
-
-  return [...results].filter((n) => Number.isInteger(n) && n >= 0 && n <= 23);
+function uniqueStrings(arr) {
+  return [...new Set(arr.map((x) => cleanText(x)).filter(Boolean))];
 }
 
-function parseWeekday(text) {
-  const t = normalizeText(text);
+function normalizeForCompare(text = "") {
+  return cleanText(text)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
 
-  const map = [
-    { keys: ["monday", "mon", "lunes"], value: "monday" },
-    { keys: ["tuesday", "tue", "martes"], value: "tuesday" },
-    { keys: ["wednesday", "wed", "miercoles", "miércoles"], value: "wednesday" },
-    { keys: ["thursday", "thu", "jueves"], value: "thursday" },
-    { keys: ["friday", "fri", "viernes"], value: "friday" },
-    { keys: ["saturday", "sat", "sabado", "sábado"], value: "saturday" },
-    { keys: ["sunday", "sun", "domingo"], value: "sunday" },
-  ];
+function containsAny(text, needles) {
+  const t = normalizeForCompare(text);
+  return needles.some((n) => t.includes(normalizeForCompare(n)));
+}
 
-  for (const item of map) {
-    if (item.keys.some((k) => t.includes(normalizeText(k)))) {
-      return item.value;
-    }
+function extractWeekday(text) {
+  const t = normalizeForCompare(text);
+
+  for (const [raw, normalized] of Object.entries(WEEKDAY_MAP)) {
+    if (t.includes(normalizeForCompare(raw))) return normalized;
+  }
+
+  if (t.includes("tomorrow")) {
+    const now = new Date();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(now.getDate() + 1);
+
+    const weekdays = [
+      "sunday",
+      "monday",
+      "tuesday",
+      "wednesday",
+      "thursday",
+      "friday",
+      "saturday",
+    ];
+    return weekdays[tomorrow.getDay()];
+  }
+
+  if (t.includes("today")) {
+    const now = new Date();
+    const weekdays = [
+      "sunday",
+      "monday",
+      "tuesday",
+      "wednesday",
+      "thursday",
+      "friday",
+      "saturday",
+    ];
+    return weekdays[now.getDay()];
   }
 
   return null;
 }
 
-function parseAvailability(text) {
-  const t = normalizeText(text);
+function parseHourToken(token, ampm = null) {
+  const match = token.match(/(\d{1,2})(?::(\d{2}))?/);
+  if (!match) return null;
 
-  if (t.includes("full capacity") || t.includes("capacidad completa")) {
+  let hour = Number(match[1]);
+
+  const suffix = ampm ? ampm.toLowerCase() : null;
+
+  if (suffix === "pm" && hour < 12) hour += 12;
+  if (suffix === "am" && hour === 12) hour = 0;
+
+  return hour;
+}
+
+function extractHours(text) {
+  const t = normalizeForCompare(text);
+  const hours = [];
+
+  // 7:00pm to 8:00pm / 7pm - 8pm
+  const rangeRegex =
+    /(\d{1,2}(?::\d{2})?)\s*(am|pm)?\s*(?:to|-|a)\s*(\d{1,2}(?::\d{2})?)\s*(am|pm)?/gi;
+
+  let rangeMatch;
+  while ((rangeMatch = rangeRegex.exec(t)) !== null) {
+    const startHour = parseHourToken(rangeMatch[1], rangeMatch[2] || rangeMatch[4] || null);
+    if (startHour !== null) hours.push(startHour);
+  }
+
+  // 19h / 20h
+  const hourHRegex = /\b(\d{1,2})\s*h\b/gi;
+  let hMatch;
+  while ((hMatch = hourHRegex.exec(t)) !== null) {
+    const hr = Number(hMatch[1]);
+    if (!Number.isNaN(hr)) hours.push(hr);
+  }
+
+  return [...new Set(hours)];
+}
+
+function extractSpots(text) {
+  const t = normalizeForCompare(text);
+
+  if (
+    t.includes("full capacity") ||
+    t.includes("capacidad completa") ||
+    t.includes("completo") ||
+    t.includes("sold out")
+  ) {
     return { available: false, spots: 0, reason: "full_capacity" };
   }
 
-  if (t.includes("no one registered") || t.includes("nadie inscrito")) {
+  let match =
+    t.match(/\b(\d{1,3})\s+(?:spots?|cupos?|spaces?)\s+(?:available|disponibles?)\b/i) ||
+    t.match(/\bavailable[:\s]+(\d{1,3})\b/i) ||
+    t.match(/\bdisponibles?[:\s]+(\d{1,3})\b/i) ||
+    t.match(/\b(\d{1,3})\s+available\b/i);
+
+  if (match) {
+    const spots = Number(match[1]);
+    return { available: spots > 0, spots, reason: "explicit_available" };
+  }
+
+  if (t.includes("no one registered")) {
     return { available: true, spots: 999, reason: "empty_class" };
   }
 
-  if (t.includes("available") || t.includes("disponible") || t.includes("spaces")) {
-    const nums = [...t.matchAll(/\b(\d{1,2})\b/g)].map((m) => parseInt(m[1], 10));
-    if (nums.length > 0) {
-      const max = Math.max(...nums);
-      if (max > 0) {
-        return { available: true, spots: max, reason: "numeric_available" };
-      }
+  match = t.match(/\b(\d{1,3})\s+max\b/i);
+  if (match) {
+    const max = Number(match[1]);
+    if (max > 0 && !t.includes("full capacity")) {
+      return { available: true, spots: max, reason: "plausible_numeric" };
     }
   }
 
-  // En Boxmagic a veces aparece solo un número suelto cerca del bloque
-  const rawNums = [...t.matchAll(/\b(\d{1,2})\b/g)].map((m) => parseInt(m[1], 10));
-  const plausible = rawNums.filter((n) => n >= 1 && n <= 12);
-  if (plausible.length > 0) {
-    const max = Math.max(...plausible);
-    return { available: true, spots: max, reason: "plausible_numeric" };
-  }
-
-  return { available: false, spots: 0, reason: "unknown" };
+  return { available: null, spots: null, reason: "unknown" };
 }
 
 function detectAlreadyBooked(text) {
-  const t = normalizeText(text);
-  const patterns = [
-    "you are registered",
-    "registered",
-    "booked",
-    "reserved",
-    "inscrito",
-    "reservado",
-    "tu reserva",
-    "mi reserva",
-    "cancel reservation",
-    "cancel booking",
-    "ver reserva",
-    "see agenda",
+  const t = normalizeForCompare(text);
+
+  const bookedSignals = [
+    "scheduled by",
+    "next scheduled session",
+    "your reservations",
     "find your reservations in your agenda",
+    "mi agenda",
+    "mis reservas",
+    "reservado",
+    "booked",
+    "scheduled session",
   ];
 
-  return patterns.some((p) => t.includes(normalizeText(p)));
+  return bookedSignals.some((s) => t.includes(normalizeForCompare(s)));
 }
 
-function isTargetSlot(weekday, hourCandidates) {
-  if (!weekday || !hourCandidates?.length) return false;
+function isLikelyClassCard(text) {
+  const t = normalizeForCompare(text);
 
-  for (const target of TARGET_SLOTS) {
-    if (target.weekday !== weekday) continue;
-    for (const h of hourCandidates) {
-      if (target.hours.includes(h)) return true;
-    }
-  }
-  return false;
+  const hasTimeRange =
+    /(\d{1,2}(?::\d{2})?\s*(am|pm)?\s*(to|-|a)\s*\d{1,2}(?::\d{2})?\s*(am|pm)?)/i.test(t);
+
+  const hasScheduleWords =
+    containsAny(t, [
+      "schedule",
+      "schedules",
+      "agenda",
+      "in person",
+      "registered",
+      "full capacity",
+      "capacidad completa",
+      "max",
+      "members",
+      "available",
+      "disponible",
+      "disponibles",
+      "session",
+      "sesion",
+      "sesión",
+      "entrenamiento",
+    ]);
+
+  return hasTimeRange && hasScheduleWords;
 }
 
-function summarizeCandidate(candidate) {
+function parseCandidate(rawText) {
+  const text = cleanText(rawText);
+  const weekday = extractWeekday(text);
+  const hours = extractHours(text);
+  const availability = extractSpots(text);
+  const alreadyBooked = detectAlreadyBooked(text);
+
   return {
-    weekday: candidate.weekday,
-    hours: candidate.hourCandidates,
-    availability: candidate.availability,
-    alreadyBooked: candidate.alreadyBooked,
-    text: candidate.text.slice(0, 240),
+    weekday,
+    hours,
+    availability,
+    alreadyBooked,
+    text,
   };
 }
 
+function isTargetCandidate(candidate) {
+  if (!candidate.weekday) return false;
+  if (!candidate.hours.length) return false;
+
+  return PREFERRED_SLOTS.some((slot) => {
+    if (slot.weekday !== candidate.weekday) return false;
+    return candidate.hours.some((h) => slot.hours.includes(h));
+  });
+}
+
+function buildAlertMessage(candidate) {
+  return [
+    "🚨 Hay cupo en una clase objetivo de Boxmagic",
+    "",
+    `📅 Día: ${candidate.weekday}`,
+    `🕒 Hora(s): ${candidate.hours.join(", ")}`,
+    `👥 Cupos: ${candidate.availability.spots ?? "desconocido"}`,
+    "",
+    `📝 Texto detectado: ${candidate.text.slice(0, 500)}`,
+  ].join("\n");
+}
+
 async function sendWhatsApp(message) {
-  if (
-    !TWILIO_ACCOUNT_SID ||
-    !TWILIO_AUTH_TOKEN ||
-    !TWILIO_WHATSAPP_FROM ||
-    !TWILIO_WHATSAPP_TO
-  ) {
-    log("⚠️ Twilio no configurado. No envío WhatsApp.");
+  if (!CONFIG.whatsappEnabled) {
+    log("📵 WhatsApp desactivado por config");
     return;
   }
 
-  const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+  if (
+    !CONFIG.twilioSid ||
+    !CONFIG.twilioToken ||
+    !CONFIG.twilioFrom ||
+    !CONFIG.whatsappTo
+  ) {
+    throw new Error("Faltan variables de entorno de Twilio/WhatsApp");
+  }
 
-  await client.messages.create({
-    from: TWILIO_WHATSAPP_FROM,
-    to: TWILIO_WHATSAPP_TO,
+  const client = twilio(CONFIG.twilioSid, CONFIG.twilioToken);
+
+  const result = await client.messages.create({
+    from: CONFIG.twilioFrom,
+    to: CONFIG.whatsappTo,
     body: message,
   });
 
-  log("✅ WhatsApp enviado");
+  log(`📲 WhatsApp enviado. SID: ${result.sid}`);
 }
 
-async function getVisibleText(page) {
-  const body = await page.locator("body").innerText().catch(() => "");
-  return safeText(body);
+async function waitAndClick(page, selectors) {
+  for (const selector of selectors) {
+    const el = page.locator(selector).first();
+    if ((await el.count()) > 0) {
+      try {
+        await el.click({ timeout: 3000 });
+        return selector;
+      } catch {}
+    }
+  }
+  return null;
 }
 
-async function findLoginAndAuthenticate(page) {
+async function openLogin(page) {
   log("🔐 Abriendo login...");
-  await page.goto(BOXMAGIC_ENTRY_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
-  await page.waitForTimeout(4000);
+  await page.goto(CONFIG.entryUrl, {
+    waitUntil: "domcontentloaded",
+    timeout: CONFIG.timeoutMs,
+  });
+
+  await page.waitForTimeout(3000);
+
+  const visibleText = cleanText(await page.locator("body").innerText()).slice(0, 3000);
+  log(`📝 Texto visible entry: ${visibleText}`);
+
+  const emailInput = page.locator('input[type="email"], input[name*="email" i]').first();
+  if ((await emailInput.count()) > 0) {
+    log("✅ Ya estoy en login");
+    return;
+  }
+
+  const clicked = await waitAndClick(page, [
+    'a[href*="login"]',
+    'button:has-text("Sign in")',
+    'button:has-text("Iniciar sesión")',
+    'button:has-text("Ingresar")',
+    'a:has-text("Sign in")',
+    'a:has-text("Iniciar sesión")',
+    'a:has-text("Ingresar")',
+  ]);
+
+  if (clicked) {
+    log(`👉 Click a login con selector: ${clicked}`);
+    await page.waitForLoadState("domcontentloaded");
+    await page.waitForTimeout(3000);
+  }
 
   log(`🌐 URL actual: ${page.url()}`);
-  const firstText = await getVisibleText(page);
-  log(`🧾 Texto visible entry: ${firstText.slice(0, 800)}`);
+  const afterText = cleanText(await page.locator("body").innerText()).slice(0, 3000);
+  log(`📝 Texto visible login: ${afterText}`);
 
-  const emailSelectors = [
-    'input[type="email"]',
-    'input[name*="email" i]',
-    'input[placeholder*="email" i]',
-    'input[autocomplete="email"]',
-  ];
-
-  const passwordSelectors = [
-    'input[type="password"]',
-    'input[name*="password" i]',
-    'input[placeholder*="password" i]',
-    'input[autocomplete="current-password"]',
-  ];
-
-  let emailInput = null;
-  let passwordInput = null;
-
-  for (const sel of emailSelectors) {
-    const locator = page.locator(sel).first();
-    if (await locator.count()) {
-      emailInput = locator;
-      log(`✅ Campo email encontrado: ${sel}`);
-      break;
-    }
-  }
-
-  for (const sel of passwordSelectors) {
-    const locator = page.locator(sel).first();
-    if (await locator.count()) {
-      passwordInput = locator;
-      log(`✅ Campo password encontrado: ${sel}`);
-      break;
-    }
-  }
-
-  if (!emailInput) {
+  const emailNow = page.locator('input[type="email"], input[name*="email" i]').first();
+  if ((await emailNow.count()) === 0) {
     throw new Error(`No encontré el campo de email. URL actual: ${page.url()}`);
   }
-  if (!passwordInput) {
-    throw new Error(`No encontré el campo de password. URL actual: ${page.url()}`);
+}
+
+async function login(page) {
+  if (!CONFIG.email || !CONFIG.password) {
+    throw new Error("Faltan BOXMAGIC_EMAIL o BOXMAGIC_PASSWORD");
   }
 
-  await emailInput.fill(BOXMAGIC_EMAIL);
-  await passwordInput.fill(BOXMAGIC_PASSWORD);
+  await openLogin(page);
 
-  const submitCandidates = [
-    'button[type="submit"]',
-    'input[type="submit"]',
-    'button:has-text("Sign in")',
-    'button:has-text("Ingresar")',
-    'button:has-text("Entrar")',
-    'button:has-text("Iniciar sesión")',
-    'button:has-text("Login")',
-  ];
+  const emailInput = page.locator('input[type="email"], input[name*="email" i]').first();
+  const passwordInput = page
+    .locator('input[type="password"], input[name*="password" i]')
+    .first();
 
-  let submitted = false;
-  for (const sel of submitCandidates) {
-    const locator = page.locator(sel).first();
-    if (await locator.count()) {
-      log(`✅ Submit login con: ${sel}`);
-      await Promise.allSettled([
-        page.waitForLoadState("networkidle", { timeout: 20000 }),
-        locator.click(),
-      ]);
-      submitted = true;
-      break;
-    }
+  if ((await passwordInput.count()) === 0) {
+    throw new Error("No encontré el campo de password");
   }
 
-  if (!submitted) {
-    await passwordInput.press("Enter");
-    await page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => {});
-    log("✅ Submit login con Enter");
-  }
+  log('✅ Campo email encontrado: input[type="email"]');
+  log('✅ Campo password encontrado: input[type="password"]');
 
+  await emailInput.fill(CONFIG.email);
+  await passwordInput.fill(CONFIG.password);
+
+  const submitSelector =
+    (await waitAndClick(page, [
+      'button[type="submit"]',
+      'button:has-text("Sign in")',
+      'button:has-text("Ingresar")',
+      'button:has-text("Iniciar sesión")',
+    ])) || 'button[type="submit"]';
+
+  log(`✅ Submit login con: ${submitSelector}`);
+
+  await page.waitForLoadState("domcontentloaded");
   await page.waitForTimeout(5000);
 
   log(`🌐 URL post-login: ${page.url()}`);
-  const postLoginText = await getVisibleText(page);
-  log(`🧾 Texto visible post-login: ${postLoginText.slice(0, 1200)}`);
-
-  if (
-    normalizeText(postLoginText).includes("sign in") &&
-    normalizeText(postLoginText).includes("password")
-  ) {
-    throw new Error("Login parece no haberse completado");
-  }
+  const postText = cleanText(await page.locator("body").innerText()).slice(0, 4000);
+  log(`📝 Texto visible post-login: ${postText}`);
 }
 
-async function navigateToSchedule(page) {
-  log("📆 Buscando vista de horarios...");
+async function goToSchedules(page) {
+  log("📅 Buscando vista de horarios...");
 
-  const agendaTexts = [
-    "agenda",
-    "schedules",
-    "schedule",
-    "horarios",
-    "reservations",
-    "see agenda",
-  ];
+  const clicked = await waitAndClick(page, [
+    'a[href*="agenda"]',
+    'a[href*="schedule"]',
+    'button:has-text("See agenda")',
+    'button:has-text("Agenda")',
+    'a:has-text("See agenda")',
+    'a:has-text("Agenda")',
+    'a:has-text("Schedules")',
+    'button:has-text("Schedules")',
+  ]);
 
-  for (const txt of agendaTexts) {
-    const locator = page.locator(`text=/^.*${txt}.*$/i`).first();
-    if (await locator.count()) {
-      log(`✅ Navegué a horarios con: text=/${txt}/i`);
-      await Promise.allSettled([
-        page.waitForLoadState("networkidle", { timeout: 20000 }),
-        locator.click(),
-      ]);
-      await page.waitForTimeout(4000);
-      break;
-    }
+  if (clicked) {
+    log(`✅ Navegué a horarios con selector: ${clicked}`);
+    await page.waitForLoadState("domcontentloaded");
+    await page.waitForTimeout(4000);
+  } else {
+    log("⚠️ No encontré botón claro de agenda. Sigo con la vista actual.");
   }
 
-  const url = page.url();
-  log(`🌐 URL horarios: ${url}`);
-
-  const text = await getVisibleText(page);
-  log(`🧾 Texto visible horarios: ${text.slice(0, 2000)}`);
-
-  if (!text) {
-    throw new Error("No pude leer contenido de la vista de horarios");
-  }
+  log(`🌐 URL horarios: ${page.url()}`);
+  const txt = cleanText(await page.locator("body").innerText()).slice(0, 5000);
+  log(`📝 Texto visible horarios: ${txt}`);
 }
 
-async function collectCandidates(page) {
-  log("🔎 Revisando clases...");
+async function collectCandidateTexts(page) {
+  const texts = await page.evaluate(() => {
+    const selectors = ["div", "li", "article", "section", "button", "a"];
+    const nodes = Array.from(document.querySelectorAll(selectors.join(",")));
 
-  const candidates = await page.evaluate(() => {
-    function clean(text) {
-      return (text || "").replace(/\s+/g, " ").trim();
-    }
-
-    const elements = [...document.querySelectorAll("div, article, section, li, button, a")]
-      .map((el) => ({
-        tag: el.tagName.toLowerCase(),
-        text: clean(el.innerText || ""),
-        html: el.innerHTML || "",
-      }))
-      .filter((x) => x.text.length >= 20 && x.text.length <= 1200);
-
-    return elements;
+    return nodes
+      .map((el) => (el.innerText || el.textContent || "").trim())
+      .filter((t) => t && t.length >= 20 && t.length <= 1200);
   });
 
-  log(`🧩 Candidatos recolectados: ${candidates.length}`);
-
-  return candidates
-    .map((item) => {
-      const mergedText = `${item.text} ${stripHtml(item.html)}`.trim();
-      const weekday = parseWeekday(mergedText);
-      const hourCandidates = parseHourCandidates(mergedText);
-      const availability = parseAvailability(mergedText);
-      const alreadyBooked = detectAlreadyBooked(mergedText);
-
-      return {
-        rawTag: item.tag,
-        text: safeText(mergedText),
-        weekday,
-        hourCandidates,
-        availability,
-        alreadyBooked,
-        targetMatch: isTargetSlot(weekday, hourCandidates),
-      };
-    })
-    .filter((x) => x.weekday || x.hourCandidates.length || x.availability.reason !== "unknown");
+  return uniqueStrings(texts).filter(isLikelyClassCard);
 }
 
-function pickBestMatches(candidates) {
-  const filtered = candidates.filter((c) => c.targetMatch);
+async function reviewClasses(page) {
+  log("🔎 Revisando clases...");
 
-  // Deduplicación gruesa por texto
-  const seen = new Set();
-  const unique = [];
-  for (const c of filtered) {
-    const key = normalizeText(c.text).slice(0, 300);
-    if (!seen.has(key)) {
-      seen.add(key);
-      unique.push(c);
-    }
+  const candidateTexts = await collectCandidateTexts(page);
+  log(`🧩 Candidatos reales recolectados: ${candidateTexts.length}`);
+
+  const parsed = candidateTexts.map(parseCandidate);
+
+  parsed.forEach((c) => {
+    log(`🧪 CANDIDATO: ${JSON.stringify(c)}`);
+  });
+
+  const targets = parsed.filter(isTargetCandidate);
+
+  targets.forEach((c) => {
+    log(`🎯 OBJETIVO: ${JSON.stringify(c)}`);
+  });
+
+  if (!targets.length) {
+    log("⚪ No encontré clases en horarios objetivo");
+    return;
   }
 
-  return unique;
-}
+  const actionable = targets.filter(
+    (c) => c.availability.available === true && c.alreadyBooked === false
+  );
 
-function buildAlertMessage(matches) {
-  const lines = [
-    "🔥 Cupo disponible en Boxmagic",
-    "",
-  ];
+  actionable.forEach((c) => {
+    log(`✅ CLASE PARSEADA: ${JSON.stringify(c)}`);
+  });
 
-  for (const m of matches) {
-    lines.push(
-      `• ${m.weekday} | horas: ${m.hourCandidates.join(", ")} | cupos: ${
-        m.availability.spots === 999 ? "vacía" : m.availability.spots
-      }`
-    );
+  if (!actionable.length) {
+    log("⚪ Hay clases objetivo, pero no corresponde avisar");
+    return;
   }
 
-  lines.push("", "Entra a Boxmagic y reserva.");
-  return lines.join("\n");
+  for (const candidate of actionable) {
+    const message = buildAlertMessage(candidate);
+    log(`📲 AVISAR: ${message}`);
+    await sendWhatsApp(message);
+  }
 }
 
 async function main() {
-  if (!BOXMAGIC_EMAIL || !BOXMAGIC_PASSWORD || !BOXMAGIC_ENTRY_URL) {
-    throw new Error("Faltan variables BOXMAGIC_EMAIL, BOXMAGIC_PASSWORD o BOXMAGIC_ENTRY_URL");
-  }
-
   let browser;
-  let context;
-  let page;
 
   try {
     log("🚀 Monitor iniciado...");
 
     browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      headless: CONFIG.headless,
+      slowMo: CONFIG.slowMo,
     });
 
-    context = await browser.newContext({
-      viewport: { width: 1440, height: 2200 },
-    });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    page.setDefaultTimeout(CONFIG.timeoutMs);
 
-    page = await context.newPage();
+    await login(page);
+    await goToSchedules(page);
+    await reviewClasses(page);
 
-    await findLoginAndAuthenticate(page);
-    await navigateToSchedule(page);
-
-    const candidates = await collectCandidates(page);
-
-    if (DEBUG) {
-      for (const c of candidates.slice(0, 60)) {
-        log(`📌 CANDIDATO: ${JSON.stringify(summarizeCandidate(c))}`);
-      }
-    }
-
-    const matches = pickBestMatches(candidates);
-
-    if (!matches.length) {
-      log("⚠️ Sin cupos en horarios objetivo");
-      return;
-    }
-
-    const availableNotBooked = matches.filter(
-      (m) => m.availability.available && !m.alreadyBooked
-    );
-
-    if (!availableNotBooked.length) {
-      log("ℹ️ Se detectaron horarios objetivo, pero sin cupo útil o ya inscrito");
-      for (const m of matches) {
-        log(`🧾 MATCH: ${JSON.stringify(summarizeCandidate(m))}`);
-      }
-      return;
-    }
-
-    for (const m of availableNotBooked) {
-      log(`✅ MATCH DISPONIBLE: ${JSON.stringify(summarizeCandidate(m))}`);
-    }
-
-    const message = buildAlertMessage(availableNotBooked);
-    await sendWhatsApp(message);
+    await browser.close();
+    log("🟢 Proceso completado");
   } catch (error) {
     log(`❌ Error scraping: ${error.message}`);
-    if (error.stack) {
-      console.error(error.stack);
-    }
-  } finally {
-    try {
-      if (browser) {
+    if (browser) {
+      try {
         await browser.close();
         log("🧹 Browser cerrado");
-      }
-    } catch {
-      // ignore
+      } catch {}
     }
+    process.exitCode = 1;
   }
 }
 
