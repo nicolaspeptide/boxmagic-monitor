@@ -2,14 +2,13 @@
   "name": "boxmagic-monitor",
   "version": "1.0.0",
   "main": "index.js",
-  "type": "module",
+  "type": "commonjs",
   "scripts": {
-    "start": "node index.js",
-    "postinstall": "npx playwright install --with-deps"
+    "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "playwright": "^1.42.0",
-    "twilio": "^5.13.1"
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "twilio": "^4.0.0"
   }
 }

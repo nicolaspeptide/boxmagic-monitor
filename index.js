@@ -1,170 +1,114 @@
-import express from 'express';
-import { chromium } from 'playwright';
-import twilio from 'twilio';
+const axios = require("axios");
+const cheerio = require("cheerio");
+const twilio = require("twilio");
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+// ======================
+// CONFIG
+// ======================
 
-// 🔐 Variables de entorno (configura en Railway)
-const EMAIL = process.env.BOXMAGIC_EMAIL;
-const PASSWORD = process.env.BOXMAGIC_PASSWORD;
-const TWILIO_SID = process.env.TWILIO_ACCOUNT_SID;
-const TWILIO_TOKEN = process.env.TWILIO_AUTH_TOKEN;
-const WHATSAPP_TO = process.env.TWILIO_WHATSAPP_TO;
+const URL = "https://members.boxmagic.app/a/g/oGDPQaGLb5/perfil?o=a-iugpd";
 
-// 📲 Twilio client
-const client = twilio(TWILIO_SID, TWILIO_TOKEN);
-
-// 🧠 Memoria simple para evitar spam (reinicia con el contenedor)
-let ultimaAlerta = null;
-
-// 🎯 Horarios objetivo (día + hora)
-const horariosObjetivo = [
-  { dia: 'lunes', horas: ['7:00pm', '8:00pm'] },
-  { dia: 'martes', horas: ['7:00pm', '8:00pm'] },
-  { dia: 'miércoles', horas: ['8:00pm'] },
-  { dia: 'viernes', horas: ['7:00pm'] }
+// horarios que quieres vigilar
+const TARGET_CLASSES = [
+  { day: "Lunes", hours: ["19:00", "20:00"] },
+  { day: "Martes", hours: ["19:00", "20:00"] },
+  { day: "Miércoles", hours: ["20:00"] },
+  { day: "Viernes", hours: ["19:00"] }
 ];
 
-// 🧠 Helpers
-function normalizarTexto(t) {
-  return t.toLowerCase().replace(/\s+/g, ' ').trim();
-}
+// Twilio
+const client = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
 
-function esHorarioObjetivo(texto) {
-  const t = normalizarTexto(texto);
-  return horariosObjetivo.some(h =>
-    t.includes(h.dia) && h.horas.some(hh => t.includes(hh))
-  );
-}
+const FROM = "whatsapp:+14155238886"; // sandbox Twilio
+const TO = "whatsapp:+569XXXXXXXX";   // tu número
 
-function hayCupo(texto) {
-  const t = normalizarTexto(texto);
-  // Ej: "3 espacios disponibles"
-  if (t.includes('espacios')) {
-    const match = t.match(/(\d+)\s*espacios/);
-    if (match) {
-      const n = parseInt(match[1], 10);
-      return n > 0;
-    }
-  }
-  // "capacidad completa" => no hay cupo
-  if (t.includes('capacidad completa')) return false;
-  return false;
-}
+// ======================
+// SCRAPING
+// ======================
 
-function yaEstoyInscrito(textoClase, reservas) {
-  const t = normalizarTexto(textoClase);
-  return reservas.some(r => normalizarTexto(r).includes(t));
-}
-
-// 🚀 Motor principal
-async function runMonitor() {
-  let browser;
+async function checkClasses() {
   try {
-    console.log('🚀 Ejecutando monitor...');
+    console.log("🔍 Revisando clases...");
 
-    browser = await chromium.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    const response = await axios.get(URL);
+    const html = response.data;
+
+    const $ = cheerio.load(html);
+
+    let found = false;
+
+    $(".class-card").each((i, el) => {
+      const text = $(el).text();
+
+      TARGET_CLASSES.forEach(target => {
+        if (text.includes(target.day)) {
+          target.hours.forEach(hour => {
+            if (text.includes(hour)) {
+
+              // detectar disponibilidad
+              const hasSpot =
+                text.includes("cupo") ||
+                text.includes("disponible") ||
+                text.match(/\b[1-9]\b/);
+
+              const isFull = text.includes("completa");
+
+              if (hasSpot && !isFull) {
+                found = true;
+
+                sendWhatsApp(
+                  `🔥 Cupo disponible:\n${target.day} ${hour}\n¡Reserva ahora!`
+                );
+              }
+            }
+          });
+        }
+      });
     });
 
-    const context = await browser.newContext();
-    const page = await context.newPage();
-
-    // 🔐 LOGIN
-    await page.goto('https://members.boxmagic.app/a/g?o=pi-e', { waitUntil: 'domcontentloaded' });
-    await page.fill('input[type="email"]', EMAIL);
-    await page.fill('input[type="password"]', PASSWORD);
-    await page.click('button[type="submit"]');
-    await page.waitForTimeout(5000);
-
-    // 📍 PERFIL (tus reservas)
-    await page.goto('https://members.boxmagic.app/a/g/oGDPQaGLb5/perfil?o=a-iugpd', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(4000);
-
-    const misReservas = await page.$$eval('*', nodes =>
-      nodes.map(n => n.innerText).filter(Boolean)
-    );
-
-    // 📅 HORARIOS
-    await page.goto('https://members.boxmagic.app/a/g/oGDPQaGLb5/horarios', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(5000);
-
-    const clases = await page.$$eval('*', nodes =>
-      nodes
-        .map(n => n.innerText)
-        .filter(t =>
-          t &&
-          t.toLowerCase().includes('entrenamiento') &&
-          (t.toLowerCase().includes('espacios') || t.toLowerCase().includes('capacidad'))
-        )
-    );
-
-    // 🧠 FILTRO CENTRAL
-    const clasesValidas = clases.filter(c => {
-      const objetivo = esHorarioObjetivo(c);
-      const disponible = hayCupo(c);
-      const inscrito = yaEstoyInscrito(c, misReservas);
-      return objetivo && disponible && !inscrito;
-    });
-
-    console.log('📊 Clases válidas:', clasesValidas.length);
-
-    // 🚨 ALERTA
-    if (clasesValidas.length > 0) {
-      const mensaje = `🚨 Cupo disponible!\n\n${clasesValidas[0]}`;
-
-      if (mensaje !== ultimaAlerta) {
-        ultimaAlerta = mensaje;
-
-        await client.messages.create({
-          body: mensaje,
-          from: 'whatsapp:+14155238886',
-          to: WHATSAPP_TO
-        });
-
-        console.log('📲 WhatsApp enviado');
-      } else {
-        console.log('🔁 Evitando alerta duplicada');
-      }
-    } else {
-      console.log('❌ No hay cupos relevantes');
+    if (!found) {
+      console.log("😴 Sin cambios");
     }
 
-  } catch (err) {
-    console.error('❌ Error:', err.message);
-  } finally {
-    if (browser) await browser.close();
-    console.log('🧹 Fin ejecución\n');
+  } catch (error) {
+    console.error("❌ Error scraping:", error.message);
   }
 }
 
-// 🌐 Endpoint manual
-app.get('/run', async (req, res) => {
-  await runMonitor();
-  res.send('OK');
-});
+// ======================
+// WHATSAPP
+// ======================
 
-// 🌐 Health check
-app.get('/', (req, res) => {
-  res.send('boxmagic-monitor activo');
-});
+async function sendWhatsApp(message) {
+  try {
+    await client.messages.create({
+      body: message,
+      from: FROM,
+      to: TO
+    });
 
-// 🔁 Auto-ejecución cada 5 minutos
-setInterval(runMonitor, 5 * 60 * 1000);
+    console.log("📲 WhatsApp enviado:", message);
 
-// 🔥 Ejecuta al iniciar
-runMonitor();
+  } catch (error) {
+    console.error("❌ Error WhatsApp:", error.message);
+  }
+}
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🌐 Servidor corriendo en puerto ${PORT}`);
-<<<<<<< HEAD
-});
-=======
-<<<<<<< HEAD
-});
-=======
-});
->>>>>>> 30e1cd9 (fix: add twilio dependency)
->>>>>>> HEAD@{1}
+// ======================
+// LOOP
+// ======================
+
+function startMonitor() {
+  console.log("🚀 Monitor iniciado...");
+
+  checkClasses();
+
+  setInterval(() => {
+    checkClasses();
+  }, 60 * 1000); // cada 60 segundos
+}
+
+startMonitor();
