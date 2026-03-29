@@ -1,9 +1,5 @@
-const puppeteer = require("puppeteer");
+const { chromium } = require("playwright");
 const twilio = require("twilio");
-
-// ======================
-// CONFIG
-// ======================
 
 const EMAIL = process.env.BOXMAGIC_EMAIL;
 const PASSWORD = process.env.BOXMAGIC_PASSWORD;
@@ -15,123 +11,196 @@ const TARGET_CLASSES = [
   { day: "Viernes", hours: ["19:00"] }
 ];
 
-// Twilio
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
 const FROM = "whatsapp:+14155238886";
-const TO = "whatsapp:+569XXXXXXXX";
+const TO = process.env.WHATSAPP_TO;
 
-// ======================
-// BOT
-// ======================
+async function sendWhatsApp(message) {
+  try {
+    await client.messages.create({
+      body: message,
+      from: FROM,
+      to: TO
+    });
+    console.log("📲 WhatsApp enviado:", message);
+  } catch (error) {
+    console.error("❌ Error WhatsApp:", error.message);
+  }
+}
+
+function matchesTarget(text, day, hour) {
+  return text.includes(day) && text.includes(hour);
+}
+
+function hasAvailability(text) {
+  const t = text.toLowerCase();
+  if (t.includes("capacidad completa")) return false;
+  if (t.includes("completa")) return false;
+  if (t.includes("sin cupos")) return false;
+  if (t.includes("sin espacios")) return false;
+  if (t.includes("disponible")) return true;
+  if (t.includes("cupo")) return true;
+  if (/\b[1-9]\d*\b/.test(text)) return true;
+  return false;
+}
+
+async function tryLogin(page) {
+  console.log("🔐 Abriendo login...");
+  await page.goto("https://members.boxmagic.app/login", {
+    waitUntil: "domcontentloaded",
+    timeout: 60000
+  });
+
+  await page.waitForTimeout(2000);
+
+  const emailSelectors = [
+    'input[type="email"]',
+    'input[name="email"]',
+    'input[placeholder*="mail"]',
+    'input[placeholder*="correo"]'
+  ];
+
+  const passwordSelectors = [
+    'input[type="password"]',
+    'input[name="password"]',
+    'input[placeholder*="contraseña"]',
+    'input[placeholder*="password"]'
+  ];
+
+  let emailFound = false;
+  for (const selector of emailSelectors) {
+    const el = await page.$(selector);
+    if (el) {
+      await page.fill(selector, EMAIL);
+      emailFound = true;
+      console.log("✅ Campo email encontrado:", selector);
+      break;
+    }
+  }
+
+  if (!emailFound) {
+    throw new Error("No encontré el campo de email");
+  }
+
+  let passwordFound = false;
+  for (const selector of passwordSelectors) {
+    const el = await page.$(selector);
+    if (el) {
+      await page.fill(selector, PASSWORD);
+      passwordFound = true;
+      console.log("✅ Campo password encontrado:", selector);
+      break;
+    }
+  }
+
+  if (!passwordFound) {
+    throw new Error("No encontré el campo de password");
+  }
+
+  const submitSelectors = [
+    'button[type="submit"]',
+    'button:has-text("Ingresar")',
+    'button:has-text("Entrar")',
+    'button:has-text("Iniciar sesión")',
+    'button:has-text("Login")'
+  ];
+
+  let clicked = false;
+  for (const selector of submitSelectors) {
+    try {
+      const el = await page.$(selector);
+      if (el) {
+        await Promise.all([
+          page.click(selector),
+          page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {})
+        ]);
+        clicked = true;
+        console.log("✅ Botón login encontrado:", selector);
+        break;
+      }
+    } catch {}
+  }
+
+  if (!clicked) {
+    throw new Error("No encontré el botón de login");
+  }
+
+  console.log("✅ Intento de login realizado");
+}
+
+async function openHorarios(page) {
+  console.log("📅 Abriendo horarios...");
+  await page.goto("https://members.boxmagic.app/", {
+    waitUntil: "domcontentloaded",
+    timeout: 60000
+  });
+
+  await page.waitForTimeout(4000);
+
+  const horariosLink = await page.locator('text=/horarios/i').first();
+  if (await horariosLink.count()) {
+    await horariosLink.click().catch(() => {});
+    await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(3000);
+    console.log("✅ Se abrió horarios desde link");
+    return;
+  }
+
+  console.log("⚠️ No encontré link explícito de horarios, reviso contenido actual");
+}
 
 async function checkClasses() {
+  console.log("🚀 Monitor iniciado...");
   console.log("🔍 Abriendo navegador...");
 
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+  const browser = await chromium.launch({
+    headless: true
   });
 
   const page = await browser.newPage();
 
   try {
-    // ======================
-    // LOGIN
-    // ======================
-
-    console.log("🔐 Login...");
-
-    await page.goto("https://members.boxmagic.app/login", {
-      waitUntil: "networkidle2"
-    });
-
-    await page.type('input[type="email"]', EMAIL);
-    await page.type('input[type="password"]', PASSWORD);
-
-    await Promise.all([
-      page.click('button[type="submit"]'),
-      page.waitForNavigation()
-    ]);
-
-    console.log("✅ Logeado");
-
-    // ======================
-    // IR A HORARIOS
-    // ======================
-
-    await page.goto("https://members.boxmagic.app/", {
-      waitUntil: "networkidle2"
-    });
-
-    await page.waitForTimeout(3000);
+    await tryLogin(page);
+    await openHorarios(page);
 
     const content = await page.content();
+    const text = await page.locator("body").innerText();
+
+    console.log("🧪 Contenido cargado, revisando clases...");
 
     let found = false;
 
-    TARGET_CLASSES.forEach(target => {
-      target.hours.forEach(hour => {
+    for (const target of TARGET_CLASSES) {
+      for (const hour of target.hours) {
+        const ok = matchesTarget(text, target.day, hour) || matchesTarget(content, target.day, hour);
 
-        if (
-          content.includes(target.day) &&
-          content.includes(hour)
-        ) {
+        if (!ok) continue;
 
-          // detectar disponibilidad
-          if (
-            content.includes("cupo") ||
-            content.includes("disponible")
-          ) {
-            found = true;
-
-            sendWhatsApp(
-              `🔥 Cupo disponible:\n${target.day} ${hour}`
-            );
-          }
+        const joined = `${text}\n${content}`;
+        if (hasAvailability(joined)) {
+          found = true;
+          const msg = `🔥 Cupo disponible: ${target.day} ${hour}`;
+          console.log(msg);
+          await sendWhatsApp(msg);
         }
-
-      });
-    });
+      }
+    }
 
     if (!found) {
-      console.log("😴 Sin cupos");
+      console.log("😴 Sin cupos en horarios objetivo");
     }
 
   } catch (error) {
-    console.error("❌ Error:", error.message);
+    console.error("❌ Error scraping:", error.message);
+  } finally {
+    await browser.close();
+    console.log("🧹 Browser cerrado");
   }
-
-  await browser.close();
 }
 
-// ======================
-// WHATSAPP
-// ======================
-
-async function sendWhatsApp(message) {
-  await client.messages.create({
-    body: message,
-    from: FROM,
-    to: TO
-  });
-
-  console.log("📲 WhatsApp enviado:", message);
-}
-
-// ======================
-// LOOP
-// ======================
-
-function startMonitor() {
-  console.log("🚀 Monitor iniciado");
-
-  checkClasses();
-
-  setInterval(checkClasses, 60 * 1000);
-}
-
-startMonitor();
+checkClasses();
+setInterval(checkClasses, 60 * 1000);
