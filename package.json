@@ -3,11 +3,14 @@
   "version": "1.0.0",
   "type": "module",
   "main": "index.js",
+  "dependencies": {
+    "playwright": "^1.42.0",
+    "twilio": "^5.0.0"
+  },
   "scripts": {
     "start": "node index.js"
   },
-  "dependencies": {
-    "playwright": "^1.58.0",
-    "twilio": "^5.5.0"
+  "engines": {
+    "node": "20.x"
   }
 }

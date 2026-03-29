@@ -1,124 +1,96 @@
-const { chromium } = require("playwright");
-const twilio = require("twilio");
+import { chromium } from 'playwright';
+import twilio from 'twilio';
 
-// ======================================================
-// CONFIG (Priorizando Variables de Entorno)
-// ======================================================
-const BOXMAGIC_ENTRY_URL = process.env.BOXMAGIC_ENTRY_URL || "https://members.boxmagic.app/a/g/oGDPQaGLb5/perfil?o=a-iugpd";
-const BOXMAGIC_EMAIL = process.env.BOXMAGIC_EMAIL || "";
-const BOXMAGIC_PASSWORD = process.env.BOXMAGIC_PASSWORD || "";
-const TARGET_SCHEDULES = {
-  monday: [19, 20],
-  tuesday: [19, 20],
-  wednesday: [20],
-  friday: [19]
+const CONFIG = {
+    url: process.env.BOXMAGIC_ENTRY_URL || "https://members.boxmagic.app/a/g/oGDPQaGLb5/perfil?o=a-iugpd",
+    email: process.env.BOXMAGIC_EMAIL,
+    pass: process.env.BOXMAGIC_PASSWORD,
+    schedules: {
+        monday: [19, 20],
+        tuesday: [19, 20],
+        wednesday: [20],
+        friday: [19]
+    }
 };
 
-const twilioClient = (process.env.TWILIO_SID && process.env.TWILIO_TOKEN) 
+const client = (process.env.TWILIO_SID && process.env.TWILIO_TOKEN) 
     ? twilio(process.env.TWILIO_SID, process.env.TWILIO_TOKEN) 
     : null;
 
-function log(msg) { console.log(`${new Date().toISOString()} | ${msg}`); }
+const log = (msg) => console.log(`${new Date().toISOString()} | ${msg}`);
 
-// ======================================================
-// LÓGICA DE NEGOCIO "ENDURECIDA"
-// ======================================================
-
-function isAlreadyBooked(text) {
-    const low = text.toLowerCase();
-    return low.includes("reservado") || low.includes("tu cupo") || low.includes("inscrito") || low.includes("booked");
-}
-
-function getAvailability(text) {
-    const low = text.toLowerCase();
-    // Veto absoluto si detecta palabras de "lleno"
-    if (low.includes("completa") || low.includes("full") || low.includes("agotado") || low.includes("0 cupos")) {
-        return { available: false, spots: 0 };
-    }
-    // Solo confiar si hay un número seguido de palabras de disponibilidad
-    const match = low.match(/(\d+)\s*(cupos|disponibles|espacios|slots|available)/);
-    if (match) {
-        const count = parseInt(match[1]);
-        return { available: count > 0, spots: count };
-    }
-    return { available: false, spots: 0 };
-}
-
-async function runMonitor() {
-    log("🚀 Iniciando monitor ultra-estricto...");
-    const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
+async function run() {
+    log("🚀 Iniciando motor senior...");
+    const browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
     const page = await browser.newPage();
 
     try {
-        // 1. LOGIN
-        await page.goto(BOXMAGIC_ENTRY_URL);
-        await page.fill('input[type="email"]', BOXMAGIC_EMAIL);
-        await page.fill('input[type="password"]', BOXMAGIC_PASSWORD);
-        await page.click('button[type="submit"], button:has-text("Entrar")');
-        await page.waitForTimeout(5000);
+        await page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+        
+        // Login robusto
+        await page.fill('input[type="email"]', CONFIG.email);
+        await page.fill('input[type="password"]', CONFIG.pass);
+        await Promise.all([
+            page.click('button[type="submit"], button:has-text("Entrar")'),
+            page.waitForNavigation({ waitUntil: 'networkidle' }).catch(() => {})
+        ]);
 
-        // 2. IR A HORARIOS (Asegurando que cargue la vista de Origen)
-        await page.goto("https://members.boxmagic.app/a/g/oGDPQaGLb5/schedule"); 
-        await page.waitForLoadState('networkidle');
+        // Navegación directa a la agenda
+        await page.goto("https://members.boxmagic.app/a/g/oGDPQaGLb5/schedule", { waitUntil: 'networkidle' });
 
-        for (const [day, hours] of Object.entries(TARGET_SCHEDULES)) {
-            log(`Checking ${day}...`);
+        for (const [day, targetHours] of Object.entries(CONFIG.schedules)) {
+            log(`Evaluando ${day}...`);
             
-            // Intentar abrir el tab del día
-            const dayTab = page.locator(`button:has-text("${day}"), span:has-text("${day}")`).first();
+            const dayTab = page.locator(`button, span, a`).filter({ hasText: new RegExp(`^${day}$`, 'i') }).first();
             if (await dayTab.count() > 0) {
                 await dayTab.click();
                 await page.waitForTimeout(2000);
             }
 
-            // REGLA DE ORO: Si ya hay una reserva hoy, no avisar por nada más
-            let diaYaResuelto = false;
-            
-            // Buscamos tarjetas de clase (Boxmagic suele usar .card o div con bordes)
-            const cards = await page.locator('div.card, .session-item, [role="listitem"]').all();
+            let diaResuelto = false;
+            // Selector de tarjeta más genérico pero efectivo
+            const cards = await page.locator('div[class*="card"], .session-item, [role="listitem"]').all();
 
             for (const card of cards) {
-                const rawText = await card.innerText();
-                const text = rawText.replace(/\n/g, " ");
-                
-                // Extraer hora de la tarjeta (ej: 19:00)
-                const timeMatch = text.match(/(\d{2}:\d{2})/);
+                const text = (await card.innerText()).toLowerCase();
+                const timeMatch = text.match(/(\d{2}):(\d{2})/);
                 if (!timeMatch) continue;
-                const cardHour = parseInt(timeMatch[1].split(":")[0]);
-
-                if (hours.includes(cardHour)) {
-                    // Check 1: ¿Ya estoy anotado?
-                    if (isAlreadyBooked(text)) {
-                        log(`✅ ${day} @ ${cardHour}:00 ya está CUBIERTO por reserva previa.`);
-                        diaYaResuelto = true;
-                        break; // Rompe el loop de tarjetas de este día
+                
+                const hour = parseInt(timeMatch[1]);
+                if (targetHours.includes(hour)) {
+                    
+                    // Lógica de descarte inmediata
+                    if (text.includes("reservado") || text.includes("inscrito") || text.includes("mi cupo")) {
+                        log(`✅ ${day} @ ${hour}:00 - Ya tienes reserva. Saltando día.`);
+                        diaResuelto = true;
+                        break;
                     }
 
-                    // Check 2: ¿Hay cupo real?
-                    const { available, spots } = getAvailability(text);
-                    if (available && !diaYaResuelto) {
-                        const alertMsg = `🚨 CUPO REAL en Origen!\n📅 Día: ${day}\n🕒 Hora: ${cardHour}:00\n👥 Cupos: ${spots}\n\nReserva rápido en la App!`;
-                        log(alertMsg);
-                        
-                        if (twilioClient) {
-                            await twilioClient.messages.create({
-                                body: alertMsg,
-                                from: process.env.TWILIO_FROM,
-                                to: process.env.TWILIO_TO
+                    // Disponibilidad real: Solo si hay un número positivo de cupos
+                    const dispoMatch = text.match(/(\d+)\s*(cupos|disponibles|espacios|slots|available)/);
+                    const hasFullSignal = text.includes("completa") || text.includes("full") || text.includes("agotado");
+
+                    if (dispoMatch && !hasFullSignal) {
+                        const spots = parseInt(dispoMatch[1]);
+                        if (spots > 0 && !diaResuelto) {
+                            const msg = `🚨 ¡CUPO EN ORIGEN!\n📅 ${day}\n🕒 ${hour}:00\n👥 ${spots} disponibles.`;
+                            log(msg);
+                            if (client) await client.messages.create({ 
+                                body: msg, from: process.env.TWILIO_FROM, to: process.env.TWILIO_TO 
                             });
+                            diaResuelto = true;
+                            break;
                         }
-                        diaYaResuelto = true; // No avisar más por este día aunque haya otra hora
-                        break; 
                     }
                 }
             }
         }
     } catch (e) {
-        log(`❌ ERROR: ${e.message}`);
+        log(`❌ Error crítico: ${e.message}`);
     } finally {
         await browser.close();
-        log("🧹 Monitor cerrado.");
+        log("🧹 Proceso finalizado.");
     }
 }
 
-runMonitor();
+run();
