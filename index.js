@@ -17,27 +17,25 @@ const client = (process.env.TWILIO_SID && process.env.TWILIO_TOKEN) ? twilio(pro
 const log = (msg) => console.log(`${new Date().toISOString()} | ${msg}`);
 
 async function run() {
-    log("🚀 Iniciando motor con Espera de Renderizado...");
+    log("🚀 Iniciando Motor de Diagnóstico...");
     const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
     const page = await browser.newPage();
 
     try {
-        log("🔐 Login...");
+        log("🔑 Entrando...");
         await page.goto(CONFIG.url, { waitUntil: 'networkidle' });
         await page.fill('input[type="email"]', CONFIG.email);
         await page.fill('input[type="password"]', CONFIG.pass);
         await page.click('button[type="submit"]');
-        
-        // Esperamos a que el login nos saque de la página de auth
+        await page.waitForTimeout(6000);
+
+        log("📅 Navegando a Agenda...");
+        await page.goto("https://members.boxmagic.app/a/g/oGDPQaGLb5/schedule", { waitUntil: 'networkidle' });
         await page.waitForTimeout(5000);
 
-        log("📅 Navegando a Agenda y esperando renderizado...");
-        await page.goto("https://members.boxmagic.app/a/g/oGDPQaGLb5/schedule", { waitUntil: 'networkidle' });
-        
-        // CRÍTICO: Esperamos a que aparezca CUALQUIER indicio de calendario o clases
-        // Esto detiene el script hasta que la página realmente cargue el contenido
-        await page.waitForSelector('button, .day-selector, .calendar, [class*="day"]', { timeout: 15000 }).catch(() => log("⚠️ Timeout esperando selectores, intentando continuar..."));
-        await page.waitForTimeout(3000); // Respiro final para animaciones
+        // DEBUG: Imprimir qué texto hay en la página para ver si estamos en el sitio correcto
+        const bodyText = await page.innerText('body');
+        log(`📄 Contenido detectado (primeros 150 caracteres): ${bodyText.substring(0, 150).replace(/\n/g, ' ')}`);
 
         const dayKeywords = {
             monday: [/lunes/i, /monday/i, /lun/i, /mon/i],
@@ -49,24 +47,32 @@ async function run() {
         for (const [day, targetHours] of Object.entries(CONFIG.schedules)) {
             log(`🔎 Buscando día: ${day}...`);
             
-            // Buscador por texto exacto o contenido en botones/enlaces
-            const dayButton = page.locator('button, a, span, div').filter({ hasText: dayKeywords[day][0] }).first();
+            // Selector "Omnidireccional": Busca el texto del día en cualquier etiqueta
+            const dayButton = page.locator('button, a, span, div, li, p').filter({ hasText: dayKeywords[day][0] }).first();
 
-            if (await dayButton.count() > 0) {
+            if (await dayButton.count() > 0 && await dayButton.isVisible()) {
                 log(`🖱️ Click en ${day}`);
                 await dayButton.click({ force: true });
-                await page.waitForTimeout(3000); // Espera a que cambie la lista de clases
+                await page.waitForTimeout(3000);
             } else {
-                log(`⚠️ No se encontró el día ${day}.`);
-                continue;
+                log(`⚠️ ${day} no encontrado. Intentando selector de respaldo...`);
+                // Respaldo: buscar por texto simple en la página
+                const backup = page.getByText(dayKeywords[day][0]).first();
+                if (await backup.count() > 0) {
+                    await backup.click({ force: true });
+                    log(`🖱️ Click de respaldo en ${day}`);
+                    await page.waitForTimeout(3000);
+                } else {
+                    continue;
+                }
             }
 
-            // Seleccionamos las clases del día
-            const cards = await page.locator('div[class*="card"], article, .session-item, div:has-text(":")').all();
+            // Detección de clases por patrones de tiempo (XX:XX)
+            const cards = await page.locator('div, article, section, li').filter({ hasText: /\d{1,2}:\d{2}/ }).all();
             
             for (const card of cards) {
                 const text = (await card.innerText()).toLowerCase().replace(/\s+/g, ' ');
-                if (text.length > 500 || text.length < 10) continue;
+                if (text.length > 600 || text.length < 12) continue;
 
                 const timeMatch = text.match(/(\d{1,2}):(\d{2})/);
                 if (!timeMatch) continue;
@@ -75,19 +81,19 @@ async function run() {
                 if ((text.includes("pm") || text.includes("noche")) && hour < 12) hour += 12;
 
                 if (targetHours.includes(hour)) {
-                    log(`⏰ Revisando ${day} @ ${hour}:00`);
+                    log(`⏰ Evaluando ${day} @ ${hour}:00`);
                     
-                    const isBooked = /reservado|inscrito|mi cupo|cancelar|booked/.test(text);
+                    const isBooked = /reservado|inscrito|mi cupo|cancelar|booked|inscrito/.test(text);
                     if (isBooked) {
                         log(`✅ ${day} @ ${hour}:00 -> YA RESERVADO.`);
                         break; 
                     }
 
-                    const dispoMatch = text.match(/(\d+)\s*(cupos|disponibles|espacios|slots)/);
-                    if (dispoMatch && !/completa|full|0 cupos/.test(text)) {
+                    const dispoMatch = text.match(/(\d+)\s*(cupos|disponibles|espacios|slots|vacantes)/);
+                    if (dispoMatch && !/completa|full|0 cupos|agotado/.test(text)) {
                         const spots = parseInt(dispoMatch[1]);
                         if (spots > 0) {
-                            const msg = `🚨 ¡CUPOS!\n📅 ${day}\n🕒 ${hour}:00\n👥 ${spots} libres.`;
+                            const msg = `🚨 ¡CUPOS!\n📅 ${day}\n🕒 ${hour}:00\n👥 ${spots} disponibles.`;
                             log("📣 ALERTA ENVIADA");
                             if (client) await client.messages.create({ body: msg, from: process.env.TWILIO_FROM, to: process.env.TWILIO_TO });
                             break;
