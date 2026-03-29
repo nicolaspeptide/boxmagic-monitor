@@ -117,51 +117,93 @@ function extractHours(text) {
   return [...out].filter((n) => !Number.isNaN(n));
 }
 
+/**
+ * REGLA DURA:
+ * - "capacidad completa" / "full capacity" / "fully booked" / "completo" => NO disponible
+ * - solo cuenta cupos EXPLÍCITOS dentro del bloque
+ * - NO usa "no one registered", "max", "members", etc. como cupos
+ */
 function extractAvailability(text) {
-  const t = normalize(text);
+  const raw = cleanText(text);
+  const t = normalize(raw);
 
-  if (
-    t.includes("capacidad completa") ||
-    t.includes("full capacity") ||
-    t.includes("completo") ||
-    t.includes("sold out")
-  ) {
-    return { available: false, spots: 0, reason: "full_capacity" };
+  const hardNoAvailabilityPatterns = [
+    /capacidad completa/i,
+    /full capacity/i,
+    /fully booked/i,
+    /\bcompleto\b/i,
+    /\bagotad[oa]s?\b/i,
+    /\bsold out\b/i,
+    /\bsin cupos\b/i,
+    /\bno spots available\b/i,
+    /\bno availability\b/i,
+  ];
+
+  for (const pattern of hardNoAvailabilityPatterns) {
+    if (pattern.test(t)) {
+      return { available: false, spots: 0, reason: "full_capacity" };
+    }
   }
 
-  let match =
-    t.match(/\b(\d{1,3})\s+(?:spots?|spaces?|cupos?)\s+(?:available|disponibles?)\b/i) ||
-    t.match(/\bavailable[: ]+(\d{1,3})\b/i) ||
-    t.match(/\bdisponibles?[: ]+(\d{1,3})\b/i) ||
-    t.match(/\b(\d{1,3})\s+available\b/i) ||
-    t.match(/\b(\d{1,3})\s+cupos?\b/i) ||
-    t.match(/\b(\d{1,3})\s+max\b/i);
+  const explicitCountPatterns = [
+    /(\d{1,3})\s+(?:espacios?|cupos?|spots?|spaces?)\s+disponibles?\b/i,
+    /disponibles?[: ]+(\d{1,3})\b/i,
+    /available[: ]+(\d{1,3})\b/i,
+    /(\d{1,3})\s+(?:espacios?|cupos?|spots?|spaces?)\s+available\b/i,
+    /(\d{1,3})\s+available\b/i,
+    /quedan[: ]+(\d{1,3})\b/i,
+    /remaining[: ]+(\d{1,3})\b/i,
+    /left[: ]+(\d{1,3})\b/i,
+  ];
 
-  if (match) {
-    const spots = Number(match[1]);
-    return { available: spots > 0, spots, reason: "explicit_count" };
+  for (const pattern of explicitCountPatterns) {
+    const match = t.match(pattern);
+    if (match) {
+      const spots = Number(match[1]);
+      return {
+        available: Number.isFinite(spots) && spots > 0,
+        spots: Number.isFinite(spots) ? spots : null,
+        reason: "explicit_count",
+      };
+    }
   }
 
-  if (t.includes("no one registered")) {
-    return { available: true, spots: 999, reason: "empty_class" };
+  const weakAvailablePatterns = [
+    /\bspots available\b/i,
+    /\bespacios disponibles\b/i,
+    /\bcupos disponibles\b/i,
+    /\bavailable\b/i,
+    /\bdisponible\b/i,
+  ];
+
+  for (const pattern of weakAvailablePatterns) {
+    if (pattern.test(t)) {
+      return { available: true, spots: null, reason: "weak_available_text" };
+    }
   }
 
   return { available: null, spots: null, reason: "unknown" };
 }
 
+/**
+ * Solo detecta reserva si la tarjeta misma lo dice de forma explícita.
+ * Sacamos señales globales ambiguas como "next scheduled session" y "my schedule".
+ */
 function detectAlreadyBooked(text) {
   const t = normalize(text);
 
-  return (
-    t.includes("already booked") ||
-    t.includes("reservado") ||
-    t.includes("booked") ||
-    t.includes("inscrito") ||
-    t.includes("scheduled by you") ||
-    t.includes("your reservation") ||
-    t.includes("my schedule") ||
-    t.includes("next scheduled session")
-  );
+  const patterns = [
+    /\balready booked\b/i,
+    /\byou are booked\b/i,
+    /\byour reservation\b/i,
+    /\breservado\b/i,
+    /\bya reservado\b/i,
+    /\bya inscrito\b/i,
+    /\binscrito\b/i,
+    /\bbooked\b/i,
+  ];
+
+  return patterns.some((pattern) => pattern.test(t));
 }
 
 function buildMessage(candidate) {
@@ -171,7 +213,7 @@ function buildMessage(candidate) {
     "",
     `📅 Día: ${candidate.weekday}`,
     `🕒 Hora(s): ${candidate.hours.join(", ")}`,
-    `👥 Cupos: ${candidate.availability.spots ?? "desconocido"}`,
+    `👥 Cupos: ${candidate.availability.spots ?? "visible, sin número exacto"}`,
     "",
     `📝 ${candidate.text.slice(0, 500)}`,
   ].join("\n");
@@ -374,7 +416,7 @@ async function collectCalendarCells(page) {
       const t = norm(text).toUpperCase();
       return [
         "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT",
-        "DOM", "LUN", "MAR", "MIE", "MIÉ", "JUE", "VIE", "SAB", "SÁB"
+        "DOM", "LUN", "MAR", "MIE", "MIÉ", "JUE", "VIE", "SAB", "SÁB",
       ].includes(t);
     }
 
@@ -426,8 +468,6 @@ async function clickDayByStructure(page, weekday) {
   log(`📆 Intentando abrir día: ${weekday} (${codes.join(", ")})`);
 
   const cells = await collectCalendarCells(page);
-  log(`🗂️ Celdas calendario detectadas: ${JSON.stringify(cells).slice(0, 2000)}`);
-
   const normalizedCodes = codes.map((x) => normalize(x));
   const matches = cells.filter((cell) =>
     normalizedCodes.includes(normalize(cell.dayText))
@@ -514,22 +554,24 @@ async function collectSessionBlocks(page) {
 
     function looksLikeSession(text) {
       const t = text.toLowerCase();
-      return (
-        /\d{1,2}(?::\d{2})?\s*(am|pm)?\s*(to|-|a)\s*\d{1,2}(?::\d{2})?\s*(am|pm)?/i.test(text) &&
-        (
-          t.includes("full capacity") ||
-          t.includes("no one registered") ||
-          t.includes("available") ||
-          t.includes("members") ||
-          t.includes("in person") ||
-          t.includes("scheduled") ||
-          t.includes("session") ||
-          t.includes("entrenamiento") ||
-          t.includes("capacidad") ||
-          t.includes("registered") ||
-          t.includes("max")
-        )
-      );
+
+      const hasTimeRange =
+        /\d{1,2}(?::\d{2})?\s*(am|pm)?\s*(to|-|a)\s*\d{1,2}(?::\d{2})?\s*(am|pm)?/i.test(text);
+
+      const hasSessionLanguage =
+        t.includes("entrenamiento") ||
+        t.includes("session") ||
+        t.includes("in person") ||
+        t.includes("capacity") ||
+        t.includes("capacidad") ||
+        t.includes("spots") ||
+        t.includes("cupos") ||
+        t.includes("available") ||
+        t.includes("disponible") ||
+        t.includes("full capacity") ||
+        t.includes("completo");
+
+      return hasTimeRange && hasSessionLanguage;
     }
 
     const selectors = [
@@ -619,17 +661,13 @@ async function reviewClassesDayByDay(page) {
     const rawBlocks = await collectSessionBlocks(page);
     log(`🧩 Bloques sesión ${target.weekday}: ${rawBlocks.length}`);
 
-    for (const block of rawBlocks) {
-      log(`🧱 BLOQUE ${target.weekday}: ${JSON.stringify(block).slice(0, 1500)}`);
-    }
-
     const parsed = rawBlocks
       .map((b) => parseSessionCandidate(b.text, target.weekday))
       .filter((x) => x.hours.length > 0)
       .filter((x) => isTargetSlot(x.weekday, x.hours));
 
     for (const item of parsed) {
-      log(`🎯 OBJETIVO ${target.weekday}: ${JSON.stringify(item).slice(0, 1500)}`);
+      log(`🎯 CANDIDATO ${target.weekday}: ${JSON.stringify(item).slice(0, 1200)}`);
     }
 
     allParsed.push(...parsed);
@@ -645,13 +683,15 @@ async function reviewClassesDayByDay(page) {
     return;
   }
 
-  const actionable = uniqueParsed.filter(
-    (c) => c.availability.available === true && c.alreadyBooked === false
-  );
+  const actionable = uniqueParsed.filter((c) => {
+    if (c.alreadyBooked) return false;
+    if (c.availability.available !== true) return false;
 
-  for (const candidate of actionable) {
-    log(`✅ CLASE PARSEADA: ${JSON.stringify(candidate).slice(0, 1500)}`);
-  }
+    // Si el texto dice full capacity/completo, nunca avisar aunque otra regla falle.
+    if (c.availability.reason === "full_capacity") return false;
+
+    return true;
+  });
 
   if (!actionable.length) {
     log("⚪ Hay objetivos, pero no corresponde avisar");
