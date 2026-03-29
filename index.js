@@ -46,7 +46,10 @@ function cleanText(text = "") {
   return String(text)
     .replace(/\u00a0/g, " ")
     .replace(/&nbsp;/gi, " ")
-    .replace(/\s+/g, " ")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
     .trim();
 }
 
@@ -143,11 +146,7 @@ function extractAvailability(text) {
 
   if (m) {
     const spots = Number(m[1]);
-    return {
-      available: spots > 0,
-      spots,
-      reason: "explicit_count",
-    };
+    return { available: spots > 0, spots, reason: "explicit_count" };
   }
 
   if (t.includes("no one registered")) {
@@ -157,8 +156,8 @@ function extractAvailability(text) {
   return { available: null, spots: null, reason: "unknown" };
 }
 
-function detectAlreadyBooked(cardText) {
-  const t = normalize(cardText);
+function detectAlreadyBooked(text) {
+  const t = normalize(text);
   return (
     t.includes("already booked") ||
     t.includes("reservado") ||
@@ -204,7 +203,6 @@ async function sendWhatsapp(body) {
   }
 
   const client = twilio(CONFIG.twilioSid, CONFIG.twilioToken);
-
   const result = await client.messages.create({
     from: CONFIG.twilioFrom,
     to: CONFIG.whatsappTo,
@@ -214,7 +212,7 @@ async function sendWhatsapp(body) {
   log(`📲 AVISAR SID=${result.sid}`);
 }
 
-async function safeInnerText(page) {
+async function safeBodyText(page) {
   return cleanText(await page.locator("body").innerText());
 }
 
@@ -240,8 +238,8 @@ async function openLogin(page) {
 
   await page.waitForTimeout(3000);
 
-  const text = await safeInnerText(page);
-  log(`📝 Texto visible entry: ${text.slice(0, 1500)}`);
+  const text = await safeBodyText(page);
+  log(`📝 Texto visible entry: ${text.slice(0, 1200)}`);
 
   const emailInput = page.locator('input[type="email"]').first();
   if ((await emailInput.count()) > 0) {
@@ -265,9 +263,6 @@ async function openLogin(page) {
     await page.waitForTimeout(3000);
   }
 
-  const textAfter = await safeInnerText(page);
-  log(`📝 Texto visible login: ${textAfter.slice(0, 1500)}`);
-
   if ((await page.locator('input[type="email"]').count()) === 0) {
     throw new Error(`No encontré el campo email. URL=${page.url()}`);
   }
@@ -287,9 +282,6 @@ async function login(page) {
     throw new Error("No encontré el campo password");
   }
 
-  log('✅ Campo email encontrado: input[type="email"]');
-  log('✅ Campo password encontrado: input[type="password"]');
-
   await emailInput.fill(CONFIG.email);
   await passwordInput.fill(CONFIG.password);
 
@@ -307,12 +299,12 @@ async function login(page) {
   await page.waitForTimeout(5000);
 
   log(`🌐 URL post-login: ${page.url()}`);
-  const postText = await safeInnerText(page);
+  const postText = await safeBodyText(page);
   log(`📝 Texto visible post-login: ${postText.slice(0, 2500)}`);
 }
 
 async function goToSchedules(page) {
-  log("📆 Buscando vista de horarios...");
+  log("📅 Buscando vista de horarios...");
 
   const used = await clickFirstExisting(page, [
     'a[href*="horarios"]',
@@ -331,171 +323,131 @@ async function goToSchedules(page) {
     await page.waitForLoadState("domcontentloaded");
     await page.waitForTimeout(4000);
   } else {
-    log("⚠️ No encontré botón claro a horarios. Continúo con vista actual.");
+    log("⚠️ No encontré botón claro de horarios");
   }
 
   log(`🌐 URL horarios: ${page.url()}`);
-  const txt = await safeInnerText(page);
+  const txt = await safeBodyText(page);
   log(`📝 Texto visible horarios: ${txt.slice(0, 2500)}`);
 }
 
-async function extractDayTabs(page) {
-  const raw = await page.evaluate(() => {
-    const nodes = Array.from(
-      document.querySelectorAll("button, a, div[role='button'], [tabindex]")
-    );
+function splitTextIntoDayBlocks(fullText) {
+  const raw = cleanText(fullText);
 
-    return nodes
-      .map((el) => {
-        const text = (el.innerText || el.textContent || "").trim();
-        if (!text || text.length > 120) return null;
+  const dayPattern =
+    /\b(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?|lun(?:es)?|mar(?:tes)?|mie(?:rcoles)?|mié(?:rcoles)?|jue(?:ves)?|vie(?:rnes)?|sab(?:ado)?|sáb(?:ado)?|dom(?:ingo)?)\s+\d{1,2}\b/gi;
 
-        const rect = el.getBoundingClientRect();
-        return {
-          text,
-          visible:
-            rect.width > 0 &&
-            rect.height > 0 &&
-            window.getComputedStyle(el).visibility !== "hidden" &&
-            window.getComputedStyle(el).display !== "none",
-          role: el.getAttribute("role") || "",
-          tag: el.tagName.toLowerCase(),
-        };
-      })
-      .filter(Boolean);
-  });
+  const matches = [...raw.matchAll(dayPattern)];
 
-  const dayLike = raw
-    .filter((item) => item.visible)
-    .filter((item) => {
-      const t = normalize(item.text);
-      return (
-        /\b(mon|tue|wed|thu|fri|sat|sun)\b/.test(t) ||
-        /\b(lun|mar|mie|mié|jue|vie|sab|sáb|dom)\b/.test(t) ||
-        /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(t) ||
-        /\b(lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo)\b/.test(t)
-      );
+  if (!matches.length) return [];
+
+  const blocks = [];
+  for (let i = 0; i < matches.length; i++) {
+    const start = matches[i].index;
+    const end = i + 1 < matches.length ? matches[i + 1].index : raw.length;
+
+    const header = matches[i][0];
+    const chunk = raw.slice(start, end).trim();
+
+    blocks.push({
+      header,
+      weekday: detectWeekday(header),
+      text: chunk,
     });
+  }
 
-  return uniqueBy(dayLike, (x) => normalize(x.text));
+  return blocks;
 }
 
-function targetsFromVisibleDayTabs(dayTabs) {
-  return dayTabs
-    .map((tab) => {
-      const weekday = detectWeekday(tab.text);
-      return {
-        ...tab,
-        weekday,
-      };
-    })
-    .filter((tab) => tab.weekday && TARGET_SLOTS.some((x) => x.weekday === tab.weekday));
-}
+function extractCandidateLinesFromBlock(blockText) {
+  const text = cleanText(blockText);
 
-async function clickDayTab(page, tabText) {
-  const escaped = tabText.replace(/"/g, '\\"');
-  const selectors = [
-    `button:has-text("${escaped}")`,
-    `a:has-text("${escaped}")`,
-    `[role="button"]:has-text("${escaped}")`,
-    `text="${tabText}"`,
-  ];
+  const pieces = text
+    .split(/(?=(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:to|-|a)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?))/gi)
+    .map((x) => cleanText(x))
+    .filter(Boolean);
 
-  const used = await clickFirstExisting(page, selectors);
-  if (!used) return false;
+  return pieces.filter((piece) => {
+    const t = normalize(piece);
 
-  await page.waitForTimeout(2500);
-  return true;
-}
+    const hasTime =
+      /(\d{1,2}(?::\d{2})?\s*(am|pm)?\s*(to|-|a)\s*\d{1,2}(?::\d{2})?\s*(am|pm)?)/i.test(
+        piece
+      );
 
-async function collectClassCardsFromCurrentDay(page) {
-  const cards = await page.evaluate(() => {
-    const nodes = Array.from(document.querySelectorAll("div, li, article, section"));
+    const hasClassSignals =
+      t.includes("full capacity") ||
+      t.includes("capacidad completa") ||
+      t.includes("registered") ||
+      t.includes("available") ||
+      t.includes("members") ||
+      t.includes("in person") ||
+      t.includes("entrenamiento") ||
+      t.includes("schedule") ||
+      t.includes("session") ||
+      t.includes("sesion") ||
+      t.includes("sesión") ||
+      t.includes("no one registered");
 
-    return nodes
-      .map((el) => {
-        const txt = (el.innerText || el.textContent || "").trim();
-        if (!txt) return null;
-        const clean = txt.replace(/\s+/g, " ").trim();
-        if (clean.length < 20 || clean.length > 1200) return null;
-
-        const hasTimeRange =
-          /(\d{1,2}(?::\d{2})?\s*(am|pm)?\s*(to|-|a)\s*\d{1,2}(?::\d{2})?\s*(am|pm)?)/i.test(
-            clean
-          );
-
-        const hasSignals =
-          /full capacity|capacidad completa|available|disponible|members|registered|max|session|sesion|sesión|in person|entrenamiento/i.test(
-            clean
-          );
-
-        if (!hasTimeRange || !hasSignals) return null;
-
-        return clean;
-      })
-      .filter(Boolean);
+    return hasTime && hasClassSignals;
   });
-
-  return uniqueBy(cards, (x) => normalize(x));
 }
 
-function parseCard(cardText, fallbackWeekday = null) {
-  const weekday = detectWeekday(cardText) || fallbackWeekday;
-  const hours = extractHours(cardText);
-  const availability = extractAvailability(cardText);
-  const alreadyBooked = detectAlreadyBooked(cardText);
-
+function parseCandidate(text, forcedWeekday = null) {
   return {
-    weekday,
-    hours,
-    availability,
-    alreadyBooked,
-    text: cardText,
+    weekday: forcedWeekday || detectWeekday(text),
+    hours: extractHours(text),
+    availability: extractAvailability(text),
+    alreadyBooked: detectAlreadyBooked(text),
+    text: cleanText(text),
   };
 }
 
 async function reviewClasses(page) {
   log("🔎 Revisando clases...");
 
-  const dayTabs = await extractDayTabs(page);
-  log(`📚 Tabs de días visibles: ${dayTabs.map((x) => x.text).join(" | ")}`);
+  const fullText = await safeBodyText(page);
+  const dayBlocks = splitTextIntoDayBlocks(fullText);
 
-  const targetTabs = targetsFromVisibleDayTabs(dayTabs);
-  log(`🎯 Tabs objetivo visibles: ${targetTabs.map((x) => `${x.text}=>${x.weekday}`).join(" | ")}`);
+  log(
+    `📚 Bloques de días detectados: ${
+      dayBlocks.map((b) => `${b.header}=>${b.weekday}`).join(" | ") || "NINGUNO"
+    }`
+  );
 
-  if (!targetTabs.length) {
-    log("⚪ No vi tabs de días objetivo en pantalla");
+  const targetBlocks = dayBlocks.filter(
+    (b) => b.weekday && TARGET_SLOTS.some((s) => s.weekday === b.weekday)
+  );
+
+  log(
+    `🎯 Bloques objetivo: ${
+      targetBlocks.map((b) => `${b.header}=>${b.weekday}`).join(" | ") || "NINGUNO"
+    }`
+  );
+
+  if (!targetBlocks.length) {
+    log("⚪ No encontré bloques de días objetivo");
     return;
   }
 
   let allCandidates = [];
 
-  for (const tab of targetTabs) {
-    log(`🗓️ Abriendo día objetivo: ${tab.text} => ${tab.weekday}`);
+  for (const block of targetBlocks) {
+    log(`🗓️ Procesando bloque: ${block.header} => ${block.weekday}`);
 
-    const clicked = await clickDayTab(page, tab.text);
-    if (!clicked) {
-      log(`⚠️ No pude hacer click en tab: ${tab.text}`);
-      continue;
-    }
+    const lines = extractCandidateLinesFromBlock(block.text);
+    log(`🧩 Candidatos crudos en ${block.weekday}: ${lines.length}`);
 
-    const dayText = await safeInnerText(page);
-    log(`📝 Texto día ${tab.weekday}: ${dayText.slice(0, 1500)}`);
-
-    const cards = await collectClassCardsFromCurrentDay(page);
-    log(`🧩 Cards en ${tab.weekday}: ${cards.length}`);
-
-    const parsed = cards.map((card) => parseCard(card, tab.weekday));
+    const parsed = lines.map((line) => parseCandidate(line, block.weekday));
 
     for (const p of parsed) {
-      log(`🧪 CANDIDATO ${tab.weekday}: ${JSON.stringify(p)}`);
+      log(`🧪 CANDIDATO ${block.weekday}: ${JSON.stringify(p)}`);
     }
 
     allCandidates.push(...parsed);
   }
 
   allCandidates = uniqueBy(allCandidates, (x) => normalize(x.text));
-
   log(`🧩 Candidatos reales recolectados: ${allCandidates.length}`);
 
   const targets = allCandidates.filter(
@@ -553,12 +505,14 @@ async function main() {
     log("🟢 Proceso completado");
   } catch (error) {
     log(`❌ Error scraping: ${error.message}`);
+
     if (browser) {
       try {
         await browser.close();
         log("🧹 Browser cerrado");
       } catch {}
     }
+
     process.exitCode = 1;
   }
 }
