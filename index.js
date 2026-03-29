@@ -38,18 +38,18 @@ const WEEKDAY_ALIASES = {
   sunday: ["sunday", "sun", "domingo", "dom"],
 };
 
-const DAY_TAB_LABELS = {
-  monday: ["MON", "MONDAY", "LUN", "LUNES"],
-  tuesday: ["TUE", "TUESDAY", "MAR", "MARTES"],
-  wednesday: ["WED", "WEDNESDAY", "MIE", "MIÉ", "MIERCOLES", "MIÉRCOLES"],
-  thursday: ["THU", "THURSDAY", "JUE", "JUEVES"],
-  friday: ["FRI", "FRIDAY", "VIE", "VIERNES"],
-  saturday: ["SAT", "SATURDAY", "SAB", "SÁB", "SABADO", "SÁBADO"],
-  sunday: ["SUN", "SUNDAY", "DOM", "DOMINGO"],
+const DAY_CODE_MAP = {
+  monday: ["MON", "LUN"],
+  tuesday: ["TUE", "MAR"],
+  wednesday: ["WED", "MIE", "MIÉ"],
+  thursday: ["THU", "JUE"],
+  friday: ["FRI", "VIE"],
+  saturday: ["SAT", "SAB", "SÁB"],
+  sunday: ["SUN", "DOM"],
 };
 
-function log(msg) {
-  console.log(`${new Date().toISOString()} ${msg}`);
+function log(message) {
+  console.log(`${new Date().toISOString()} ${message}`);
 }
 
 function cleanText(text = "") {
@@ -73,6 +73,7 @@ function normalize(text = "") {
 function uniqueBy(arr, keyFn) {
   const seen = new Set();
   const out = [];
+
   for (const item of arr) {
     const key = keyFn(item);
     if (!seen.has(key)) {
@@ -80,34 +81,37 @@ function uniqueBy(arr, keyFn) {
       out.push(item);
     }
   }
+
   return out;
 }
 
 function extractHours(text) {
-  const t = normalize(text);
+  const source = cleanText(text);
   const out = new Set();
 
   const rangeRegex =
     /(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:to|-|a)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/gi;
 
-  let m;
-  while ((m = rangeRegex.exec(t)) !== null) {
-    let h = Number(m[1]);
-    const ampm = (m[3] || m[6] || "").toLowerCase();
+  let match;
+  while ((match = rangeRegex.exec(source)) !== null) {
+    let hour = Number(match[1]);
+    const ampm = String(match[3] || match[6] || "").toLowerCase();
 
-    if (ampm === "pm" && h < 12) h += 12;
-    if (ampm === "am" && h === 12) h = 0;
+    if (ampm === "pm" && hour < 12) hour += 12;
+    if (ampm === "am" && hour === 12) hour = 0;
 
-    out.add(h);
+    out.add(hour);
   }
 
-  const isolated = /\b(\d{1,2})\s*(am|pm)\b/gi;
-  while ((m = isolated.exec(t)) !== null) {
-    let h = Number(m[1]);
-    const ampm = (m[2] || "").toLowerCase();
-    if (ampm === "pm" && h < 12) h += 12;
-    if (ampm === "am" && h === 12) h = 0;
-    out.add(h);
+  const isolatedRegex = /\b(\d{1,2})\s*(am|pm)\b/gi;
+  while ((match = isolatedRegex.exec(source)) !== null) {
+    let hour = Number(match[1]);
+    const ampm = String(match[2] || "").toLowerCase();
+
+    if (ampm === "pm" && hour < 12) hour += 12;
+    if (ampm === "am" && hour === 12) hour = 0;
+
+    out.add(hour);
   }
 
   return [...out].filter((n) => !Number.isNaN(n));
@@ -125,15 +129,16 @@ function extractAvailability(text) {
     return { available: false, spots: 0, reason: "full_capacity" };
   }
 
-  let m =
+  let match =
     t.match(/\b(\d{1,3})\s+(?:spots?|spaces?|cupos?)\s+(?:available|disponibles?)\b/i) ||
     t.match(/\bavailable[: ]+(\d{1,3})\b/i) ||
     t.match(/\bdisponibles?[: ]+(\d{1,3})\b/i) ||
     t.match(/\b(\d{1,3})\s+available\b/i) ||
-    t.match(/\b(\d{1,3})\s+cupos?\b/i);
+    t.match(/\b(\d{1,3})\s+cupos?\b/i) ||
+    t.match(/\b(\d{1,3})\s+max\b/i);
 
-  if (m) {
-    const spots = Number(m[1]);
+  if (match) {
+    const spots = Number(match[1]);
     return { available: spots > 0, spots, reason: "explicit_count" };
   }
 
@@ -154,7 +159,8 @@ function detectAlreadyBooked(text) {
     t.includes("inscrito") ||
     t.includes("scheduled by you") ||
     t.includes("your reservation") ||
-    t.includes("my schedule")
+    t.includes("my schedule") ||
+    t.includes("next scheduled session")
   );
 }
 
@@ -187,6 +193,7 @@ async function sendWhatsapp(body) {
   }
 
   const client = twilio(CONFIG.twilioSid, CONFIG.twilioToken);
+
   const result = await client.messages.create({
     from: CONFIG.twilioFrom,
     to: CONFIG.whatsappTo,
@@ -215,6 +222,7 @@ async function clickFirstExisting(page, selectors) {
 
 async function openLogin(page) {
   log("🔐 Abriendo login...");
+
   await page.goto(CONFIG.entryUrl, {
     waitUntil: "domcontentloaded",
     timeout: CONFIG.timeoutMs,
@@ -329,42 +337,150 @@ async function listVisibleDayTabs(page) {
       );
     }
 
-    const all = Array.from(
-      document.querySelectorAll("button, a, div, span")
-    ).filter(visible);
-
-    return all
+    const candidates = Array.from(document.querySelectorAll("button, a, div, span"))
+      .filter(visible)
       .map((el) => ({
         text: (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim(),
       }))
-      .filter((x) => x.text.length > 0 && x.text.length <= 30);
+      .filter((x) => x.text.length > 0 && x.text.length <= 40);
+
+    return candidates;
   });
 
   const uniq = uniqueBy(tabs, (x) => normalize(x.text));
-  log(`📚 Tabs visibles: ${uniq.map((x) => x.text).join(" | ").slice(0, 1000)}`);
+  log(`📚 Tabs visibles: ${uniq.map((x) => x.text).join(" | ").slice(0, 1200)}`);
   return uniq;
 }
 
-async function clickDayTab(page, weekday) {
-  const labels = DAY_TAB_LABELS[weekday] || [];
-  log(`📆 Intentando abrir día: ${weekday} (${labels.join(", ")})`);
+async function collectCalendarCells(page) {
+  return await page.evaluate(() => {
+    function visible(el) {
+      const st = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return (
+        st.display !== "none" &&
+        st.visibility !== "hidden" &&
+        Number(st.opacity || "1") > 0 &&
+        rect.width > 0 &&
+        rect.height > 0
+      );
+    }
 
-  for (const label of labels) {
-    const selectors = [
-      `button:has-text("${label}")`,
-      `a:has-text("${label}")`,
-      `div:has-text("${label}")`,
-      `span:has-text("${label}")`,
-      `text=${label}`,
+    function norm(s = "") {
+      return String(s || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+    }
+
+    function looksLikeDayToken(text) {
+      const t = norm(text).toUpperCase();
+      return [
+        "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT",
+        "DOM", "LUN", "MAR", "MIE", "MIÉ", "JUE", "VIE", "SAB", "SÁB"
+      ].includes(t);
+    }
+
+    function looksLikeSmallDateToken(text) {
+      const t = norm(text);
+      return /^\d{1,2}$/.test(t);
+    }
+
+    const elements = Array.from(document.querySelectorAll("button, a, div, span"))
+      .filter(visible);
+
+    const raw = elements.map((el) => {
+      const text = norm(el.innerText || el.textContent || "");
+      const rect = el.getBoundingClientRect();
+      return {
+        tag: el.tagName,
+        text,
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        w: Math.round(rect.width),
+        h: Math.round(rect.height),
+      };
+    });
+
+    const dayTokens = raw.filter((x) => looksLikeDayToken(x.text));
+    const dateTokens = raw.filter((x) => looksLikeSmallDateToken(x.text));
+
+    const cells = dayTokens.map((day) => {
+      const nearbyDates = dateTokens
+        .filter((d) => Math.abs(d.x - day.x) < 40 && Math.abs(d.y - day.y) < 80)
+        .sort((a, b) => Math.abs(a.y - day.y) - Math.abs(b.y - day.y));
+
+      return {
+        dayText: day.text,
+        dateText: nearbyDates[0]?.text || null,
+        x: day.x,
+        y: day.y,
+        w: day.w,
+        h: day.h,
+      };
+    });
+
+    return cells;
+  });
+}
+
+async function clickDayByStructure(page, weekday) {
+  const codes = DAY_CODE_MAP[weekday] || [];
+  log(`📆 Intentando abrir día: ${weekday} (${codes.join(", ")})`);
+
+  const cells = await collectCalendarCells(page);
+  log(`🗂️ Celdas calendario detectadas: ${JSON.stringify(cells).slice(0, 2000)}`);
+
+  const normalizedCodes = codes.map((x) => normalize(x));
+  const matches = cells.filter((cell) =>
+    normalizedCodes.includes(normalize(cell.dayText))
+  );
+
+  for (const cell of matches) {
+    const clicked = await page.evaluate(
+      ({ x, y }) => {
+        const el = document.elementFromPoint(x + 5, y + 5);
+        if (!el) return false;
+
+        const candidates = [];
+        let current = el;
+        for (let i = 0; i < 5 && current; i += 1) {
+          candidates.push(current);
+          current = current.parentElement;
+        }
+
+        for (const candidate of candidates) {
+          try {
+            candidate.click();
+            return true;
+          } catch {}
+        }
+
+        return false;
+      },
+      { x: cell.x, y: cell.y }
+    );
+
+    if (clicked) {
+      await page.waitForTimeout(2500);
+      log(`✅ Día abierto por estructura: ${weekday} -> ${cell.dayText} ${cell.dateText || ""}`);
+      return true;
+    }
+  }
+
+  for (const code of codes) {
+    const fallbackSelectors = [
+      `button:has-text("${code}")`,
+      `a:has-text("${code}")`,
+      `div:has-text("${code}")`,
+      `span:has-text("${code}")`,
+      `text=${code}`,
     ];
 
-    for (const selector of selectors) {
+    for (const selector of fallbackSelectors) {
       const locator = page.locator(selector).first();
       if ((await locator.count()) > 0) {
         try {
           await locator.click({ timeout: 2500 });
           await page.waitForTimeout(2500);
-          log(`✅ Día abierto con selector: ${selector}`);
+          log(`✅ Día abierto con fallback selector: ${selector}`);
           return true;
         } catch {}
       }
@@ -410,7 +526,8 @@ async function collectSessionBlocks(page) {
           t.includes("session") ||
           t.includes("entrenamiento") ||
           t.includes("capacidad") ||
-          t.includes("registered")
+          t.includes("registered") ||
+          t.includes("max")
         )
       );
     }
@@ -425,7 +542,7 @@ async function collectSessionBlocks(page) {
       "[class*='session']",
       "[class*='schedule']",
       "[class*='slot']",
-      "div"
+      "div",
     ];
 
     const nodes = Array.from(document.querySelectorAll(selectors.join(",")))
@@ -452,9 +569,21 @@ async function collectSessionBlocks(page) {
   return uniqueBy(items, (x) => `${x.y}|${normalize(x.text)}`);
 }
 
-function parseSessionCandidate(text, forcedWeekday) {
+function inferWeekdayFromText(text) {
+  const n = normalize(text);
+
+  for (const [weekday, aliases] of Object.entries(WEEKDAY_ALIASES)) {
+    if (aliases.some((alias) => n.includes(normalize(alias)))) {
+      return weekday;
+    }
+  }
+
+  return null;
+}
+
+function parseSessionCandidate(text, forcedWeekday = null) {
   return {
-    weekday: forcedWeekday,
+    weekday: forcedWeekday || inferWeekdayFromText(text),
     hours: extractHours(text),
     availability: extractAvailability(text),
     alreadyBooked: detectAlreadyBooked(text),
@@ -465,7 +594,8 @@ function parseSessionCandidate(text, forcedWeekday) {
 function isTargetSlot(weekday, hours) {
   return TARGET_SLOTS.some(
     (slot) =>
-      slot.weekday === weekday && hours.some((hour) => slot.hours.includes(hour))
+      slot.weekday === weekday &&
+      hours.some((hour) => slot.hours.includes(hour))
   );
 }
 
@@ -476,21 +606,21 @@ async function reviewClassesDayByDay(page) {
   const allParsed = [];
 
   for (const target of TARGET_SLOTS) {
-    log(`➡️ Procesando día objetivo: ${target.weekday}`);
+    log(`🗓️ Procesando día objetivo: ${target.weekday}`);
 
-    const opened = await clickDayTab(page, target.weekday);
+    const opened = await clickDayByStructure(page, target.weekday);
     if (!opened) {
       continue;
     }
 
     const pageText = await safeBodyText(page);
-    log(`📝 Texto visible ${target.weekday}: ${pageText.slice(0, 1200)}`);
+    log(`📝 Texto visible ${target.weekday}: ${pageText.slice(0, 1500)}`);
 
     const rawBlocks = await collectSessionBlocks(page);
     log(`🧩 Bloques sesión ${target.weekday}: ${rawBlocks.length}`);
 
     for (const block of rawBlocks) {
-      log(`🧱 BLOQUE ${target.weekday}: ${JSON.stringify(block)}`);
+      log(`🧱 BLOQUE ${target.weekday}: ${JSON.stringify(block).slice(0, 1500)}`);
     }
 
     const parsed = rawBlocks
@@ -499,7 +629,7 @@ async function reviewClassesDayByDay(page) {
       .filter((x) => isTargetSlot(x.weekday, x.hours));
 
     for (const item of parsed) {
-      log(`🎯 OBJETIVO ${target.weekday}: ${JSON.stringify(item)}`);
+      log(`🎯 OBJETIVO ${target.weekday}: ${JSON.stringify(item).slice(0, 1500)}`);
     }
 
     allParsed.push(...parsed);
@@ -519,8 +649,8 @@ async function reviewClassesDayByDay(page) {
     (c) => c.availability.available === true && c.alreadyBooked === false
   );
 
-  for (const a of actionable) {
-    log(`✅ CLASE PARSEADA: ${JSON.stringify(a)}`);
+  for (const candidate of actionable) {
+    log(`✅ CLASE PARSEADA: ${JSON.stringify(candidate).slice(0, 1500)}`);
   }
 
   if (!actionable.length) {
