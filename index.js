@@ -3,49 +3,42 @@ import stealth from 'puppeteer-extra-plugin-stealth';
 
 chromium.use(stealth());
 
-const CONFIG = {
-    authToken: (process.env.BOXMAGIC_TOKEN || "").trim(),
-    // Usamos la URL exacta que vemos en tu navegador exitoso
-    targetUrl: "https://members.boxmagic.app/a/g/oGDPQaGLb5/horarios"
-};
-
-const log = (msg) => console.log(`${new Date().toISOString()} | ${msg}`);
-
 async function run() {
-    log("🚀 MOTOR FINAL: Validación de Identidad y Ruta");
+    console.log("🛠️ Iniciando navegación completa (Modo Humano)...");
     
     const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
-    const context = await browser.newContext({
-        extraHTTPHeaders: {
-            'Authorization': `Bearer ${CONFIG.authToken.replace('Bearer ', '')}`,
-            'Referer': 'https://members.boxmagic.app/',
-            'Origin': 'https://members.boxmagic.app'
-        }
-    });
-
+    const context = await browser.newContext();
     const page = await context.newPage();
 
     try {
-        log(`📅 Navegando a ruta específica...`);
-        const response = await page.goto(CONFIG.targetUrl, { waitUntil: 'networkidle' });
+        // 1. Ir al login
+        await page.goto("https://members.boxmagic.app/login", { waitUntil: 'networkidle' });
         
-        log(`📡 Respuesta del servidor: ${response.status()}`);
-        await page.waitForTimeout(7000); 
+        // 2. Intentar loguear solo si detecta los campos
+        if (await page.isVisible('input[type="email"]')) {
+            console.log("🔑 Pantalla de login detectada. Ingresando credenciales...");
+            await page.fill('input[type="email"]', process.env.USER_EMAIL);
+            await page.fill('input[type="password"]', process.env.USER_PASS);
+            await page.click('button[type="submit"]');
+            await page.waitForNavigation({ waitUntil: 'networkidle' });
+        }
+
+        // 3. Ir a la agenda
+        await page.goto("https://members.boxmagic.app/a/g/oGDPQaGLb5/horarios");
+        await page.waitForTimeout(10000); // Espera larga para que cargue todo
 
         const content = await page.content();
-        
-        // Verificación por contenido real de la página
-        if (response.status() === 200 && (content.includes('Nicolás') || content.includes('LUN'))) {
-            log("✅ ¡PROYECTO COMPLETADO! Agenda detectada y sesión activa.");
+        if (content.includes('Nicolás') || content.includes('Sesiones')) {
+            console.log("✅ Acceso exitoso a la agenda.");
+            // Lógica de Twilio aquí...
         } else {
-            log(`⚠️ Falló la detección. Status: ${response.status()}. URL: ${page.url()}`);
+            console.log("❌ No se pudo validar la sesión. Tomando captura para ver qué pasó...");
+            await page.screenshot({ path: 'error.png' });
         }
     } catch (e) {
-        log(`❌ ERROR CRÍTICO: ${e.message}`);
+        console.log(`❌ Error: ${e.message}`);
     } finally {
         await browser.close();
-        log("🏁 Proceso terminado.");
     }
 }
-
 run();
