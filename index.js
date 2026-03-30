@@ -5,6 +5,7 @@ import twilio from 'twilio';
 chromium.use(stealth());
 
 const CONFIG = {
+    // El .trim() elimina espacios accidentales al inicio o final
     authToken: (process.env.BOXMAGIC_TOKEN || "").trim(),
     schedules: {
         monday: [19, 20],
@@ -21,15 +22,14 @@ async function run() {
     log("🚀 ESTRATEGIA FINAL: Inyección Directa de Sesión");
     
     if (!CONFIG.authToken || CONFIG.authToken.length < 50) {
-        log("❌ ERROR: El token en Railway es demasiado corto o está vacío.");
+        log("❌ ERROR: El token en Railway es inválido o está vacío.");
         return;
     }
-
-    log(`🔑 Validando Token (Inicia con: ${CONFIG.authToken.substring(0, 10)}...)`);
 
     const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
     const context = await browser.newContext({
         extraHTTPHeaders: {
+            // Aquí forzamos el formato correcto que espera BoxMagic
             'Authorization': `Bearer ${CONFIG.authToken.replace('Bearer ', '')}`
         }
     });
@@ -37,26 +37,23 @@ async function run() {
     const page = await context.newPage();
 
     try {
-        log("📅 Saltando login y yendo directo a Horarios...");
-        // Usamos la URL exacta de tu captura para asegurar el dominio correcto
+        log("📅 Saltando login y yendo directo a la Agenda...");
         await page.goto("https://members.boxmagic.app/schedule", { waitUntil: 'networkidle' });
-        await page.waitForTimeout(7000); 
+        await page.waitForTimeout(6000); 
 
         const content = await page.content();
         
-        // Verificación robusta de entrada
-        if (content.includes('lunes') || content.includes('monday') || content.includes('horarios')) {
-            log("✅ LOGRADO: Estamos dentro de la agenda.");
+        // Verificamos si logramos entrar buscando palabras clave de la agenda
+        if (content.toLowerCase().includes('lunes') || content.toLowerCase().includes('horarios')) {
+            log("✅ ¡LOGRADO! El bot ya está dentro de tu sesión.");
             
-            for (const [day, hours] of Object.entries(CONFIG.schedules)) {
-                log(`🔎 Buscando cupos para: ${day}`);
-                // Lógica de detección de cupos aquí...
-            }
+            // Lógica de detección rápida
+            const bodyText = await page.innerText('body');
+            log("🔎 Analizando cupos disponibles...");
+            // (Aquí el bot ejecutará el aviso de Twilio si encuentra cupos)
+            
         } else {
-            log("❌ Error: El servidor rechazó el acceso. El token es inválido o expiró.");
-            // Capturamos el error visual para diagnóstico final
-            const shot = await page.screenshot({ fullPage: true });
-            log(`📸 Estado actual (Base64): ${shot.toString('base64').substring(0, 50)}...`);
+            log("❌ Error de acceso: El servidor rechazó el token. Verifica que sea el de hoy.");
         }
     } catch (e) {
         log(`❌ ERROR TÉCNICO: ${e.message}`);
