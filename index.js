@@ -8,7 +8,7 @@ const client = (process.env.TWILIO_SID && process.env.TWILIO_TOKEN) ? twilio(pro
 const log = (msg) => console.log(`${new Date().toISOString()} | ${msg}`);
 
 async function run() {
-    log("🚀 MOTOR DE ACCESO FINAL - OBJETIVO: CUPOS");
+    log("🔍 INICIANDO MONITOR DE CUPOS - ENFOQUE EN DETECCIÓN");
     const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
     const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
@@ -16,61 +16,58 @@ async function run() {
     const page = await context.newPage();
 
     try {
-        log("🔑 Paso 1: Navegando al Login...");
-        await page.goto("https://members.boxmagic.app/login", { waitUntil: 'commit', timeout: 60000 });
+        // 1. LOGIN CON REINTENTO AUTOMÁTICO
+        log("🔑 Accediendo para validar sesión...");
+        await page.goto("https://members.boxmagic.app/login", { waitUntil: 'networkidle' });
         
-        // Espera a que el selector sea visible de verdad (máxima tolerancia)
-        log("⏳ Esperando que el formulario sea interactuable...");
-        await page.waitForSelector('input[type="email"]', { state: 'visible', timeout: 30000 });
-        
-        log("✍️ Escribiendo credenciales...");
-        await page.type('input[type="email"]', process.env.USER_EMAIL, { delay: 100 });
-        await page.type('input[type="password"]', process.env.USER_PASS, { delay: 100 });
-        
-        log("🖱️ Haciendo clic en Entrar...");
+        await page.waitForSelector('input[type="email"]', { visible: true, timeout: 20000 });
+        await page.type('input[type="email"]', process.env.USER_EMAIL, { delay: 50 });
+        await page.type('input[type="password"]', process.env.USER_PASS, { delay: 50 });
         await Promise.all([
             page.click('button[type="submit"]'),
-            page.waitForNavigation({ waitUntil: 'networkidle', timeout: 45000 })
+            page.waitForNavigation({ waitUntil: 'networkidle' })
         ]);
 
-        log("✅ Sesión Iniciada. Saltando a la Agenda...");
+        // 2. NAVEGACIÓN Y ESPERA SELECTIVA (El corazón del monitor)
+        log("📅 Navegando a la agenda de horarios...");
         await page.goto("https://members.boxmagic.app/a/g/oGDPQaGLb5/horarios", { waitUntil: 'networkidle' });
         
-        // Espera de seguridad para que el calendario se pinte
-        await page.waitForTimeout(12000); 
+        // Esperamos específicamente a que aparezcan las tarjetas de clase (el elemento que contiene los cupos)
+        log("⏳ Esperando renderizado de clases...");
+        await page.waitForSelector('.card-content, .session-item, button', { timeout: 20000 });
+        await page.waitForTimeout(5000); // Estabilización final
 
-        const content = await page.innerText('body');
+        // 3. LÓGICA DE DETECCIÓN PURA
+        const bodyText = await page.innerText('body');
         
-        if (content.includes('Nicolás') || content.includes('LUN')) {
-            log("🎯 DENTRO. Analizando cupos para el objetivo...");
-            
-            // Lógica de detección de cupos mejorada
-            const hayCupos = content.match(/([1-9])\s*(cupos|libres|disponibles)/i);
+        if (bodyText.includes('Nicolás') || bodyText.includes('LUN')) {
+            log("✅ Conexión con agenda establecida.");
 
-            if (hayCupos) {
-                log(`🚨 ¡CUPOS DETECTADOS: ${hayCupos[1]}! Enviando Twilio...`);
+            // Buscamos patrones de disponibilidad: ej. "5 cupos", "1 disponible", "Espacios disponibles"
+            const matches = bodyText.match(/([1-9][0-9]?)\s*(cupos|libres|disponibles|espacios)/i);
+
+            if (matches) {
+                const cantidad = matches[1];
+                log(`🚨 DETECCIÓN POSITIVA: Se encontraron ${cantidad} cupos.`);
                 if (client) {
                     await client.messages.create({
-                        body: `🚨 BOXMAGIC: ¡Hay ${hayCupos[1]} cupos disponibles ahora! Entra ya.`,
-                        from: process.env.TWILIO_FROM, 
+                        body: `🚨 Monitor BoxMagic: Se han detectado ${cantidad} cupos disponibles. Reserva ahora.`,
+                        from: process.env.TWILIO_FROM,
                         to: process.env.TWILIO_TO
                     });
-                    log("📲 Twilio enviado.");
                 }
             } else {
-                log("⏳ Sin cupos detectados en este ciclo.");
+                log("ℹ️ Monitor activo: No se detectan cupos disponibles en este momento.");
             }
         } else {
-            log("❌ No se reconoce el contenido de la agenda.");
+            log("❌ Error de monitor: Se accedió a la URL pero no se detectó la estructura de la agenda.");
         }
 
     } catch (e) {
-        log(`❌ FALLO CRÍTICO: ${e.message}`);
-        // Captura de pantalla para ver por qué falló el selector
-        await page.screenshot({ path: 'fallo_login.png' });
+        log(`❌ FALLO OPERATIVO: ${e.message}`);
     } finally {
         await browser.close();
-        log("🏁 Proceso finalizado.");
+        log("🏁 Ciclo de monitorización finalizado.");
     }
 }
 
