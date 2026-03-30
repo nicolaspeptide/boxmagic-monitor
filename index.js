@@ -5,55 +5,63 @@ import twilio from 'twilio';
 chromium.use(stealth());
 
 const client = (process.env.TWILIO_SID && process.env.TWILIO_TOKEN) ? twilio(process.env.TWILIO_SID, process.env.TWILIO_TOKEN) : null;
+const log = (msg) => console.log(`${new Date().toISOString()} | ${msg}`);
 
 async function run() {
-    console.log("🚀 INICIANDO ESTRATEGIA DE ACCESO TOTAL...");
+    log("🚀 ESTRATEGIA MAESTRA: Navegación Orgánica Completa");
+    
+    // Lanzamos navegador con huella de usuario real
     const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
-    const context = await browser.newContext({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36' });
+    const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    });
     const page = await context.newPage();
 
     try {
-        // 1. LOGIN MANUAL (Evita el bloqueo de tokens)
-        console.log("🔑 Accediendo al login...");
+        // PASO 1: Login Real
+        log("🔑 Iniciando sesión desde la puerta principal...");
         await page.goto("https://members.boxmagic.app/login", { waitUntil: 'networkidle' });
+        
         await page.fill('input[type="email"]', process.env.USER_EMAIL);
         await page.fill('input[type="password"]', process.env.USER_PASS);
         await page.click('button[type="submit"]');
         
-        // Esperar a que el dashboard cargue
+        // Esperamos que el servidor nos reconozca y nos mueva
         await page.waitForNavigation({ waitUntil: 'networkidle' });
-        console.log("✅ Login exitoso.");
+        log("✅ Sesión iniciada correctamente.");
 
-        // 2. NAVEGACIÓN A LA AGENDA ESPECÍFICA
-        console.log("📅 Navegando a la agenda de tu gimnasio...");
+        // PASO 2: Navegación a la Agenda del Gimnasio
+        log("📅 Navegando a la agenda de tu gimnasio...");
         await page.goto("https://members.boxmagic.app/a/g/oGDPQaGLb5/horarios", { waitUntil: 'networkidle' });
-        await page.waitForTimeout(10000); // Espera crucial para que carguen las clases
+        
+        // Espera de seguridad para carga de componentes dinámicos
+        await page.waitForTimeout(10000); 
 
-        // 3. VERIFICACIÓN DE CONTENIDO
         const content = await page.innerText('body');
+        
         if (content.includes('Nicolás') || content.includes('LUN')) {
-            console.log("🎯 ¡DENTRO! Agenda detectada correctamente.");
+            log("🎯 ¡CONSEGUIDO! Agenda visible y operativa.");
             
-            // 4. LÓGICA DE ESCANEO DE CUPOS
-            if (content.includes('cupos') || content.includes('disponibles')) {
-                console.log("🚨 ¡CUPOS DETECTADOS!");
+            // PASO 3: Lógica de detección de cupos
+            if (/cupos|libres|disponibles/i.test(content)) {
+                log("🚨 ¡HAY CUPOS DETECTADOS!");
                 if (client) {
                     await client.messages.create({
-                        body: "🚨 Boxmagic: ¡Hay cupos disponibles ahora! Entra ya.",
+                        body: "🚨 Boxmagic: ¡Hay cupos disponibles ahora! Entra a la App.",
                         from: process.env.TWILIO_FROM,
                         to: process.env.TWILIO_TO
                     });
                 }
             }
         } else {
-            console.log("⚠️ No se reconoció la agenda. Tomando captura de diagnóstico...");
-            await page.screenshot({ path: 'estado.png' });
+            log("⚠️ Acceso logrado pero no se detectó el contenido esperado.");
         }
+
     } catch (e) {
-        console.log(`❌ ERROR CRÍTICO: ${e.message}`);
+        log(`❌ FALLO TÉCNICO: ${e.message}`);
     } finally {
         await browser.close();
-        console.log("🏁 Proceso finalizado.");
+        log("🏁 Ciclo completado.");
     }
 }
 
