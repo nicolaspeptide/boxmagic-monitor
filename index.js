@@ -5,7 +5,6 @@ import twilio from 'twilio';
 chromium.use(stealth());
 
 const CONFIG = {
-    // Railway tomará el token que pegaste en las variables
     authToken: process.env.BOXMAGIC_TOKEN,
     schedules: {
         monday: [19, 20],
@@ -22,12 +21,12 @@ async function run() {
     log("🚀 Iniciando Motor con Inyección de Bearer Token...");
     
     if (!CONFIG.authToken) {
-        log("❌ ERROR: No se encontró BOXMAGIC_TOKEN en Railway.");
+        log("❌ ERROR: No se encontró BOXMAGIC_TOKEN en las variables de Railway.");
         return;
     }
 
     const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
-    // Inyectamos el token en todas las cabeceras para saltar el login por completo
+    // Inyectamos el token en el contexto para que todas las peticiones estén autenticadas
     const context = await browser.newContext({
         extraHTTPHeaders: {
             'Authorization': `Bearer ${CONFIG.authToken.replace('Bearer ', '').trim()}`
@@ -38,23 +37,19 @@ async function run() {
 
     try {
         log("📅 Navegando directamente a la agenda...");
-        // URL directa a la agenda basada en tus capturas
         await page.goto("https://members.boxmagic.app/schedule", { waitUntil: 'networkidle' });
         await page.waitForTimeout(6000);
 
         const bodyText = await page.innerText('body');
         
         if (bodyText.toLowerCase().includes('lunes') || bodyText.toLowerCase().includes('horarios')) {
-            log("✅ ¡Acceso exitoso! El bot ya puede ver la agenda.");
-            
-            // Aquí puedes añadir la lógica de escaneo que usamos antes...
-            log("🔎 Escaneando cupos para los días seleccionados...");
+            log("✅ Acceso exitoso. El bot ya puede visualizar la agenda.");
+            // Aquí continúa la lógica de escaneo de cupos...
         } else {
-            log("❌ Falló el acceso. Es posible que el token haya expirado.");
+            log("❌ El bypass falló. Es posible que el token sea incorrecto o haya expirado.");
         }
-
     } catch (e) {
-        log(`❌ ERROR: ${e.message}`);
+        log(`❌ ERROR CRÍTICO: ${e.message}`);
     } finally {
         await browser.close();
         log("🧹 Monitor finalizado.");
