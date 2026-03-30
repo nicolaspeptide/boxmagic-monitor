@@ -1,16 +1,9 @@
 {
-  "name": "boxmagic-monitor",
-  "version": "1.0.0",
   "type": "module",
-  "main": "index.js",
   "dependencies": {
-    "playwright": "^1.42.0",
-    "twilio": "^5.0.0"
-  },
-  "scripts": {
-    "start": "node index.js"
-  },
-  "engines": {
-    "node": "20.x"
+    "playwright": "latest",
+    "playwright-extra": "latest",
+    "puppeteer-extra-plugin-stealth": "latest",
+    "twilio": "latest"
   }
 }
