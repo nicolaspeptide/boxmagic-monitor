@@ -18,41 +18,56 @@ const client = (process.env.TWILIO_SID && process.env.TWILIO_TOKEN) ? twilio(pro
 const log = (msg) => console.log(`${new Date().toISOString()} | ${msg}`);
 
 async function run() {
-    log("🚀 Iniciando Motor con Inyección de Bearer Token...");
+    log("🚀 ESTRATEGIA FINAL: Inyección Directa de Sesión");
     
-    if (!CONFIG.authToken) {
-        log("❌ ERROR: No se encontró BOXMAGIC_TOKEN en las variables de Railway.");
-        return;
-    }
-
     const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
-    // Inyectamos el token en el contexto para que todas las peticiones estén autenticadas
+    // Aquí ocurre la magia: el bot se presenta con tu token ante Boxmagic
     const context = await browser.newContext({
         extraHTTPHeaders: {
-            'Authorization': `Bearer ${CONFIG.authToken.replace('Bearer ', '').trim()}`
+            'Authorization': `Bearer ${CONFIG.authToken.trim()}`
         }
     });
 
     const page = await context.newPage();
 
     try {
-        log("📅 Navegando directamente a la agenda...");
+        log("📅 Saltando login y yendo directo a Horarios...");
         await page.goto("https://members.boxmagic.app/schedule", { waitUntil: 'networkidle' });
-        await page.waitForTimeout(6000);
+        await page.waitForTimeout(5000); // Espera de seguridad para carga de JS
 
         const bodyText = await page.innerText('body');
         
         if (bodyText.toLowerCase().includes('lunes') || bodyText.toLowerCase().includes('horarios')) {
-            log("✅ Acceso exitoso. El bot ya puede visualizar la agenda.");
-            // Aquí continúa la lógica de escaneo de cupos...
+            log("✅ LOGRADO: Estamos dentro de la agenda.");
+            
+            // ESCANEO DE CUPOS
+            for (const [day, hours] of Object.entries(CONFIG.schedules)) {
+                // Buscamos el botón del día por texto (ej: "LUN 30")
+                const dayBtn = page.locator('button, div, span').filter({ hasText: new RegExp(day, 'i') }).first();
+                if (await dayBtn.count() > 0) {
+                    await dayBtn.click({ force: true });
+                    await page.waitForTimeout(2000);
+                    
+                    const content = await page.innerText('body');
+                    // Si encuentra la hora y dice que hay cupos (ej: "5 cupos")
+                    if (hours.some(h => content.includes(`${h}:00`)) && /cupos|libres|disponibles/.test(content)) {
+                        log(`🚨 ¡CUPOS ENCONTRADOS PARA ${day.toUpperCase()}!`);
+                        if (client) await client.messages.create({ 
+                            body: `🚨 Boxmagic: Cupos libres para el ${day} a las ${hours.join(':00, ')}:00`, 
+                            from: process.env.TWILIO_FROM, 
+                            to: process.env.TWILIO_TO 
+                        });
+                    }
+                }
+            }
         } else {
-            log("❌ El bypass falló. Es posible que el token sea incorrecto o haya expirado.");
+            log("❌ Error: El token no funcionó o expiró. Verifica el valor en Railway.");
         }
     } catch (e) {
-        log(`❌ ERROR CRÍTICO: ${e.message}`);
+        log(`❌ ERROR: ${e.message}`);
     } finally {
         await browser.close();
-        log("🧹 Monitor finalizado.");
+        log("🏁 Proceso terminado.");
     }
 }
 
