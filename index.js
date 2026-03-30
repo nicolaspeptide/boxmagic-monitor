@@ -8,62 +8,57 @@ const client = (process.env.TWILIO_SID && process.env.TWILIO_TOKEN) ? twilio(pro
 const log = (msg) => console.log(`${new Date().toISOString()} | ${msg}`);
 
 async function run() {
-    log("🔍 INICIANDO MONITOR DE CUPOS (MODO CLONACIÓN)");
+    log("🔍 MONITOR: Iniciando escaneo directo de cupos...");
     const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
     
+    // Inyectamos tu identidad directamente para saltar el login fallido
     const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
         extraHTTPHeaders: {
             'Authorization': `Bearer ${process.env.BOXMAGIC_TOKEN}`,
             'Gots-Gimnasio': 'oGDPQaGLb5',
-            'Gots-App': 'members',
-            'Gots-Ambiente': 'produccion',
-            'Referer': 'https://members.boxmagic.app/',
-            'Origin': 'https://members.boxmagic.app'
-        }
+            'Gots-App': 'members'
+        },
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     });
 
     const page = await context.newPage();
 
     try {
-        log("📅 Accediendo directamente al sensor de la agenda...");
+        log("📅 Accediendo a la tabla de horarios...");
         const targetUrl = "https://members.boxmagic.app/a/g/oGDPQaGLb5/horarios";
         
-        // Vamos directo a la URL de horarios saltando el login
-        const response = await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
-        
-        log(`📡 Respuesta del servidor: ${response.status()}`);
-        await page.waitForTimeout(10000); // Tiempo para que el JS dibuje los cupos
+        await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
+        await page.waitForTimeout(10000); // Tiempo para que carguen los números de cupos
 
         const body = await page.innerText('body');
         
         if (body.includes('Nicolás') || body.includes('LUN')) {
-            log("✅ SENSOR CONECTADO: Leyendo disponibilidad...");
+            log("✅ Sensor conectado. Analizando texto...");
 
-            // EXPRESIÓN REGULAR PARA DETECTAR CUPOS: Busca números seguidos de "cupos", "libres" o "espacios"
-            const matches = body.match(/([1-9][0-9]?)\s*(cupos|libres|disponibles|espacios)/i);
+            // BUSCADOR DE CUPOS: Detecta cualquier número mayor a 0 al lado de la palabra cupo/libre/disponible
+            const matches = body.match(/([1-9][0-9]?)\s*(cupos|libres|disponibles|vacantes)/i);
 
             if (matches) {
                 const cantidad = matches[1];
-                log(`🚨 ALERTA: ¡Detección de ${cantidad} cupos!`);
+                log(`🚨 ¡ÉXITO! Detectados ${cantidad} cupos disponibles.`);
                 if (client) {
                     await client.messages.create({
-                        body: `🚨 Monitor BoxMagic: ¡Hay ${cantidad} cupos disponibles! Reserva ya.`,
+                        body: `🚨 BoxMagic: ¡Hay ${cantidad} cupos libres! Entra ahora mismo.`,
                         from: process.env.TWILIO_FROM,
                         to: process.env.TWILIO_TO
                     });
                 }
             } else {
-                log("⏳ Monitor activo: No se detectan cupos en este momento.");
+                log("⏳ Monitor activo: No se detectan cupos disponibles en este momento.");
             }
         } else {
-            log("❌ ERROR DE SENSOR: No se detectó la estructura de la agenda. El token podría haber expirado.");
+            log("❌ Error de acceso: El token ya no es válido o la URL cambió. Actualiza el Token.");
         }
     } catch (e) {
-        log(`❌ FALLO OPERATIVO: ${e.message}`);
+        log(`❌ Fallo en el ciclo: ${e.message}`);
     } finally {
         await browser.close();
-        log("🏁 Ciclo de monitorización finalizado.");
+        log("🏁 Ciclo terminado.");
     }
 }
 
