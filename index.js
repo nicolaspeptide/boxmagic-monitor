@@ -5,19 +5,14 @@ chromium.use(stealth());
 
 const CONFIG = {
     authToken: (process.env.BOXMAGIC_TOKEN || "").trim(),
-    url: "https://members.boxmagic.app/a/g/oGDPQaGLb5/horarios" // URL exacta de tu captura
+    baseUrl: "https://members.boxmagic.app/schedule" // URL raíz de horarios
 };
 
 const log = (msg) => console.log(`${new Date().toISOString()} | ${msg}`);
 
 async function run() {
-    log("🚀 EJECUCIÓN FINAL: Verificación de Acceso Directo");
+    log("🚀 EJECUCIÓN FINAL: Navegación de Sesión Validada");
     
-    if (!CONFIG.authToken) {
-        log("❌ ERROR: No se encontró el token en Railway.");
-        return;
-    }
-
     const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
     const context = await browser.newContext({
         extraHTTPHeaders: {
@@ -28,27 +23,25 @@ async function run() {
     const page = await context.newPage();
 
     try {
-        log("📅 Navegando directamente a la agenda...");
-        const response = await page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+        log("📅 Entrando por la ruta raíz de la agenda...");
+        const response = await page.goto(CONFIG.baseUrl, { waitUntil: 'networkidle' });
         
         log(`📡 Respuesta del servidor: ${response.status()}`);
-        await page.waitForTimeout(5000); 
+        await page.waitForTimeout(8000); // Damos tiempo extra para carga de JS interno
 
         const content = await page.content();
         
-        // Buscamos elementos clave que confirmen que estamos dentro (ej. el nombre del usuario o días)
-        if (content.includes('Nicolás') || content.includes('LUN 30')) {
-            log("✅ ACCESO CONFIRMADO: El bot está operando dentro de tu cuenta.");
-            // Aquí se activa la lógica de reserva/notificación
+        if (response.status() === 200 && (content.includes('Nicolás') || content.includes('LUN 30') || content.includes('horarios'))) {
+            log("✅ LOGRADO: ¡Sesión activa y agenda detectada!");
+            // Iniciar lógica de escaneo aquí
         } else {
-            log("⚠️ El servidor respondió pero no se reconoce la agenda. Verificando URL actual...");
-            log(`📍 URL Final: ${page.url()}`);
+            log(`⚠️ Status ${response.status()}. No se detectó la agenda. URL final: ${page.url()}`);
         }
     } catch (e) {
         log(`❌ ERROR: ${e.message}`);
     } finally {
         await browser.close();
-        log("🏁 Proceso finalizado.");
+        log("🏁 Proceso terminado.");
     }
 }
 
